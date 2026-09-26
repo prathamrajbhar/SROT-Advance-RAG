@@ -1,0 +1,10 @@
+Given a conversation history and a follow-up question, rewrite the follow-up question into a standalone search query that contains all necessary context.
+Do not answer the question; only return the rewritten query string.
+
+Conversation History:
+{history}
+
+Follow-up Question:
+{question}
+
+Standalone Search Query:

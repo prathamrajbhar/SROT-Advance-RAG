@@ -1,0 +1,122 @@
+from typing import Any, Dict, List, Optional
+from qdrant_client import AsyncQdrantClient
+from qdrant_client.http import models as rest_models
+from core.config import get_settings
+
+settings = get_settings()
+
+qdrant_client: Optional[AsyncQdrantClient] = None
+
+
+def get_qdrant() -> AsyncQdrantClient:
+    global qdrant_client
+    if qdrant_client is None:
+        qdrant_client = AsyncQdrantClient(
+            url=settings.QDRANT_URL,
+            api_key=settings.QDRANT_API_KEY,
+            check_compatibility=False,
+        )
+    return qdrant_client
+
+
+def get_collection_name(project_id: str) -> str:
+    clean_id = str(project_id).replace("-", "_")
+    return f"proj_{clean_id}"
+
+
+async def ensure_project_collection(
+    project_id: str, vector_dim: int = 1024
+) -> str:
+    import asyncio
+    client = get_qdrant()
+    collection_name = get_collection_name(project_id)
+    
+    exists = await client.collection_exists(collection_name=collection_name)
+    if not exists:
+        for attempt in range(4):
+            try:
+                await client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=rest_models.VectorParams(
+                        size=vector_dim,
+                        distance=rest_models.Distance.COSINE,
+                    ),
+                )
+                break
+            except Exception as e:
+                # If another concurrent task created it, verify existence
+                if await client.collection_exists(collection_name=collection_name):
+                    break
+                if attempt == 3:
+                    raise
+                await asyncio.sleep(0.5)
+    return collection_name
+
+
+async def delete_project_collection(project_id: str) -> None:
+    client = get_qdrant()
+    collection_name = get_collection_name(project_id)
+    try:
+        await client.delete_collection(collection_name=collection_name)
+    except Exception:
+        pass
+
+
+async def upsert_chunks(
+    project_id: str, points: List[rest_models.PointStruct]
+) -> None:
+    client = get_qdrant()
+    collection_name = get_collection_name(project_id)
+    await client.upsert(
+        collection_name=collection_name,
+        points=points,
+    )
+
+
+async def delete_document_points(project_id: str, document_id: str) -> None:
+    client = get_qdrant()
+    collection_name = get_collection_name(project_id)
+    try:
+        await client.delete(
+            collection_name=collection_name,
+            points_selector=rest_models.FilterSelector(
+                filter=rest_models.Filter(
+                    must=[
+                        rest_models.FieldCondition(
+                            key="document_id",
+                            match=rest_models.MatchValue(value=str(document_id)),
+                        )
+                    ]
+                )
+            ),
+        )
+    except Exception:
+        pass
+
+
+async def search_vectors(
+    project_id: str,
+    query_vector: List[float],
+    limit: int = 40,
+    score_threshold: Optional[float] = None,
+) -> List[rest_models.ScoredPoint]:
+    client = get_qdrant()
+    collection_name = get_collection_name(project_id)
+    try:
+        response = await client.query_points(
+            collection_name=collection_name,
+            query=query_vector,
+            limit=limit,
+            score_threshold=score_threshold,
+            query_filter=rest_models.Filter(
+                must=[
+                    rest_models.FieldCondition(
+                        key="project_id",
+                        match=rest_models.MatchValue(value=str(project_id)),
+                    )
+                ]
+            ),
+        )
+        return response.points
+    except Exception:
+        return []

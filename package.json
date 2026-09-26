@@ -1,0 +1,24 @@
+{
+  "name": "srot-monorepo",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Enterprise Multi-Project Multimodal RAG Platform",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "setup": "bash scripts/setup.sh",
+    "dev": "concurrently -n \"api,web,worker\" -c \"blue,green,magenta\" \"npm run dev:api\" \"npm run dev:web\" \"npm run dev:worker\"",
+    "dev:api": "cd apps/api && .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
+    "dev:web": "cd apps/web && npm run dev",
+    "dev:worker": "cd apps/api && .venv/bin/celery -A modules.ingestion.tasks worker --loglevel=info",
+    "test": "npm run test:api && npm run test:web",
+    "test:api": "cd apps/api && .venv/bin/pytest -v",
+    "test:web": "cd apps/web && npm test",
+    "migrate": "cd apps/api && .venv/bin/alembic upgrade head",
+    "health": "bash scripts/check-health.sh"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
