@@ -1,25 +1,35 @@
-from typing import Optional
+import asyncio
+from typing import Dict
 import redis.asyncio as aioredis
 from core.config import get_settings
 
 settings = get_settings()
 
-redis_client: Optional[aioredis.Redis] = None
+_redis_clients: Dict[int, aioredis.Redis] = {}
 
 
 async def get_redis() -> aioredis.Redis:
-    global redis_client
-    if redis_client is None:
-        redis_client = aioredis.from_url(
+    try:
+        loop = asyncio.get_running_loop()
+        loop_id = id(loop)
+    except RuntimeError:
+        loop_id = 0
+
+    client = _redis_clients.get(loop_id)
+    if client is None:
+        client = aioredis.from_url(
             settings.REDIS_URL,
             encoding="utf-8",
             decode_responses=True,
         )
-    return redis_client
+        _redis_clients[loop_id] = client
+    return client
 
 
 async def close_redis() -> None:
-    global redis_client
-    if redis_client is not None:
-        await redis_client.close()
-        redis_client = None
+    for client in list(_redis_clients.values()):
+        try:
+            await client.close()
+        except Exception:
+            pass
+    _redis_clients.clear()

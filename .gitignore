@@ -41,6 +41,7 @@ yarn-error.log*
 .next/
 out/
 .turbo
+*.tsbuildinfo
 
 # Vector DB & Storage Data
 qdrant_storage/

@@ -7,12 +7,16 @@ export interface MessageListProps {
   messages: ChatMessage[];
   currentStage?: string | null;
   onCitationClick?: (citation: Citation) => void;
+  onRetry?: (queryText: string) => void;
+  onEdit?: (messageId: string, newContent: string) => void;
 }
 
 export const MessageList: React.FC<MessageListProps> = ({
   messages,
   currentStage = null,
   onCitationClick,
+  onRetry,
+  onEdit,
 }) => {
   const getStageLabel = (stage: string) => {
     switch (stage) {
@@ -45,13 +49,29 @@ export const MessageList: React.FC<MessageListProps> = ({
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-2 space-y-2">
-      {messages.map((msg) => (
-        <MessageItem
-          key={msg.id}
-          message={msg}
-          onCitationClick={onCitationClick}
-        />
-      ))}
+      {messages.map((msg, idx) => {
+        // Find preceding user query if this is an assistant turn
+        let associatedUserQuery = "";
+        if (msg.role === "assistant") {
+          for (let i = idx - 1; i >= 0; i--) {
+            if (messages[i].role === "user") {
+              associatedUserQuery = messages[i].content_md;
+              break;
+            }
+          }
+        }
+
+        return (
+          <MessageItem
+            key={msg.id}
+            message={msg}
+            onCitationClick={onCitationClick}
+            onRetry={onRetry}
+            onEdit={onEdit}
+            associatedUserQuery={associatedUserQuery}
+          />
+        );
+      })}
 
       {currentStage && (
         <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-3 my-2 animate-pulse">

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import uuid
@@ -5,13 +6,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from core.database import async_session_factory
 from core.qdrant import delete_document_points
 from core.redis import get_redis
 from core.s3 import delete_s3_object, generate_presigned_url, upload_file_bytes
-from models.document import Document, IngestStatus
+from models.document import Chunk, Document, IngestStatus
 from models.project import ProjectRole
 from modules.documents.schemas import DocumentUploadItem
-from modules.ingestion.tasks import ingest_document_task
+from modules.ingestion.pipeline import process_document_ingestion
 from modules.projects.service import verify_project_access
 
 
@@ -66,15 +68,12 @@ async def upload_documents(
         db.add(doc)
         await db.commit()
 
-        # Enqueue background ingestion
-        file_b64 = base64.b64encode(content).decode("utf-8")
-        try:
-            ingest_document_task.delay(str(doc_id), file_b64)
-        except Exception:
-            # If celery broker is offline, run inline async fallback
-            from modules.ingestion.pipeline import process_document_ingestion
-            import asyncio
-            asyncio.create_task(process_document_ingestion(db, doc_id, content))
+        # In-Process Async Ingestion (Zero separate worker process required)
+        async def _run_in_background(document_id: uuid.UUID, file_bytes: bytes) -> None:
+            async with async_session_factory() as bg_db:
+                await process_document_ingestion(bg_db, document_id, file_bytes)
+
+        asyncio.create_task(_run_in_background(doc_id, content))
 
         upload_results.append(
             DocumentUploadItem(
@@ -146,6 +145,48 @@ async def get_document_content_url(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     return await generate_presigned_url(doc.s3_key, expires_in=300)
+
+
+async def get_document_chunks(
+    db: AsyncSession, project_id: uuid.UUID, doc_id: uuid.UUID, user_id: uuid.UUID
+) -> Dict[str, Any]:
+    await verify_project_access(db, project_id, user_id)
+    stmt = select(Document).where(Document.id == doc_id, Document.project_id == project_id)
+    doc = (await db.execute(stmt)).scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    chunk_stmt = select(Chunk).where(Chunk.document_id == doc_id).order_by(Chunk.chunk_index.asc())
+    chunks = (await db.execute(chunk_stmt)).scalars().all()
+
+    return {
+        "document": {
+            "id": str(doc.id),
+            "filename": doc.filename,
+            "mime_type": doc.mime_type,
+            "size_bytes": doc.size_bytes,
+            "status": doc.status.value,
+            "stats": doc.stats,
+            "pii_flags": doc.pii_flags,
+            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+            "indexed_at": doc.indexed_at.isoformat() if doc.indexed_at else None,
+        },
+        "total_chunks": len(chunks),
+        "chunks": [
+            {
+                "id": str(c.id),
+                "chunk_index": c.chunk_index,
+                "parent_id": str(c.parent_id) if c.parent_id else None,
+                "kind": c.kind,
+                "token_count": c.token_count,
+                "content": c.content,
+                "locator": c.locator,
+                "content_hash": c.content_hash,
+                "embedding_id": str(c.embedding_id) if c.embedding_id else None,
+            }
+            for c in chunks
+        ],
+    }
 
 
 async def delete_document(

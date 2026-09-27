@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
+import { ToastProvider } from "@/components/ui/toast";
 
 export const metadata: Metadata = {
   title: "SROT — Enterprise Multi-Project Multimodal RAG",
@@ -14,7 +16,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="bg-slate-50 text-slate-900 min-h-screen antialiased">
-        {children}
+        <ErrorBoundary>
+          <ToastProvider>
+            {children}
+          </ToastProvider>
+        </ErrorBoundary>
       </body>
     </html>
   );

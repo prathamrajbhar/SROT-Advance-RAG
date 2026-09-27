@@ -164,6 +164,7 @@ export default function ProjectDocumentsPage({
           ) : (
             <DocumentTable
               documents={filteredDocuments}
+              projectId={projectId}
               onView={handleView}
               onDelete={(doc) => setDeletingDoc(doc)}
             />

@@ -49,11 +49,16 @@ async def test_gemini_generation():
 
     model_name = settings.LLM_MODEL if settings.LLM_PROVIDER == "gemini" else "gemini-3.8-flash"
     llm = GeminiProvider(api_key=settings.GEMINI_API_KEY, model=model_name)
-    response = await llm.generate(
-        messages=[{"role": "user", "content": "Respond with: PONG"}],
-        temperature=0.0,
-        max_tokens=256,
-    )
-    assert response.content is not None
-    assert len(response.content.strip()) > 0
-    assert "PONG" in response.content.upper()
+    try:
+        response = await llm.generate(
+            messages=[{"role": "user", "content": "Respond with: PONG"}],
+            temperature=0.0,
+            max_tokens=256,
+        )
+        assert response.content is not None
+        assert len(response.content.strip()) > 0
+        assert "PONG" in response.content.upper()
+    except RuntimeError as e:
+        if "429" in str(e) or "quota" in str(e).lower():
+            pytest.skip(f"Gemini API quota exceeded: {e}")
+        raise

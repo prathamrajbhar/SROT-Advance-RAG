@@ -16,7 +16,7 @@ if "localhost" in settings.DATABASE_URL or "127.0.0.1" in settings.DATABASE_URL:
 
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=(settings.ENVIRONMENT == "development"),
+    echo=False,
     future=True,
     poolclass=NullPool,
     connect_args=connect_args,

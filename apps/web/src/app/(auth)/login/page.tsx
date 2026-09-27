@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/hooks/use-auth";
+import { ApiError } from "@/lib/api-client";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -18,8 +19,14 @@ export default function LoginPage() {
     setError(null);
     try {
       await login(email, password);
-    } catch (err: any) {
-      setError(err.detail || "Invalid credentials");
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        setError(err.detail);
+      } else if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError("Invalid credentials");
+      }
     }
   };
 

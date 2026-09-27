@@ -73,6 +73,11 @@ async def test_multiformat_ingestion_and_rag():
                     b"id,metric,val\n1,accuracy,0.96\n2,latency,150ms",
                 ),
                 (
+                    "metrics.tsv",
+                    "text/tab-separated-values",
+                    b"id\tfeature\tstatus\n1\tauth\tverified\n2\tindexing\tactive",
+                ),
+                (
                     "config.xlsx",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     xlsx_buf.getvalue(),
@@ -81,6 +86,11 @@ async def test_multiformat_ingestion_and_rag():
                     "manual.docx",
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     docx_buf.getvalue(),
+                ),
+                (
+                    "settings.json",
+                    "application/json",
+                    b'{\n  "version": "2.0.0",\n  "service": "srot-enterprise",\n  "environment": "production"\n}',
                 ),
             ]
 

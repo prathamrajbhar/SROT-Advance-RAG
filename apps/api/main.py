@@ -1,6 +1,8 @@
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from core.config import get_settings
@@ -17,14 +19,15 @@ from modules.projects.router import router as projects_router
 
 setup_logging()
 settings = get_settings()
+logger = logging.getLogger("srot.api")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         await ensure_bucket_exists()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"S3 bucket init deferred: {e}")
     yield
     await close_redis()
 
@@ -48,16 +51,50 @@ app.add_middleware(
 )
 
 
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    trace_id = getattr(request.state, "trace_id", "unknown")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "type": f"https://srot.dev/errors/{exc.status_code}",
+            "title": exc.detail if isinstance(exc.detail, str) else "HTTP Error",
+            "status": exc.status_code,
+            "detail": exc.detail,
+            "trace_id": trace_id,
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    trace_id = getattr(request.state, "trace_id", "unknown")
+    errors = exc.errors()
+    clean_detail = "; ".join([f"{e.get('loc', ['body'])[-1]}: {e.get('msg', 'invalid')}" for e in errors])
+    return JSONResponse(
+        status_code=422,
+        content={
+            "type": "https://srot.dev/errors/validation-error",
+            "title": "Unprocessable Request Entity",
+            "status": 422,
+            "detail": clean_detail,
+            "errors": errors,
+            "trace_id": trace_id,
+        },
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     trace_id = getattr(request.state, "trace_id", "unknown")
+    logger.error(f"Internal server error: {exc}", exc_info=True, extra={"trace_id": trace_id})
     return JSONResponse(
         status_code=500,
         content={
             "type": "https://srot.dev/errors/internal-error",
             "title": "Internal Server Error",
             "status": 500,
-            "detail": str(exc),
+            "detail": "An internal system error occurred. Our engineering team has logged this event.",
             "trace_id": trace_id,
         },
     )

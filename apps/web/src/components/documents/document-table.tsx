@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import Link from "next/link";
 import {
   FileText,
   FileSpreadsheet,
@@ -13,6 +14,7 @@ import {
   Trash2,
   ShieldCheck,
   ShieldAlert,
+  Layers,
 } from "lucide-react";
 import { DocumentItem } from "@/types";
 import { Badge } from "@/components/ui/badge";
@@ -21,11 +23,17 @@ import { formatBytes } from "@/lib/utils";
 
 interface DocumentTableProps {
   documents: DocumentItem[];
+  projectId?: string;
   onView: (id: string) => void;
   onDelete: (doc: DocumentItem) => void;
 }
 
-export const DocumentTable: React.FC<DocumentTableProps> = ({ documents, onView, onDelete }) => {
+export const DocumentTable: React.FC<DocumentTableProps> = ({
+  documents,
+  projectId,
+  onView,
+  onDelete,
+}) => {
   const getFileIcon = (filename: string) => {
     const ext = filename.split(".").pop()?.toLowerCase();
     if (ext === "csv" || ext === "xlsx" || ext === "xls") {
@@ -128,12 +136,23 @@ export const DocumentTable: React.FC<DocumentTableProps> = ({ documents, onView,
                 </td>
                 <td className="py-3 pl-3 pr-4 text-right whitespace-nowrap">
                   <div className="flex items-center justify-end gap-1.5">
+                    {doc.status === "indexed" && projectId && (
+                      <Link
+                        href={`/projects/${projectId}/documents/${doc.id}/chunks`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center justify-center h-8 w-8 rounded-lg text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+                        title="Inspect All Chunks (New Page)"
+                      >
+                        <Layers className="h-3.5 w-3.5" />
+                      </Link>
+                    )}
                     {doc.status === "indexed" && (
                       <Button
                         variant="ghost"
                         size="sm"
                         onClick={() => onView(doc.id)}
-                        className="h-8 w-8 p-0 text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+                        className="h-8 w-8 p-0 text-slate-500 hover:text-slate-900 hover:bg-slate-100"
                         title="Preview Document"
                       >
                         <ExternalLink className="h-3.5 w-3.5" />

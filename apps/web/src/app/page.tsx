@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { FolderPlus, Layers, Search, Filter } from "lucide-react";
+import { FolderPlus, Layers, Search, Filter, AlertTriangle, RefreshCw } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useProjects } from "@/hooks/use-projects";
 import { Project } from "@/types";
@@ -16,8 +16,22 @@ import { WorkspaceDeleteDialog } from "@/components/workspaces/workspace-delete-
 
 export default function HomePage() {
   const { user, isLoading: isAuthLoading, logout } = useAuth();
-  const { projects, isLoading: isProjectsLoading, createProject, updateProject, deleteProject } = useProjects();
+  const {
+    projects,
+    isLoading: isProjectsLoading,
+    error: projectsError,
+    fetchProjects,
+    createProject,
+    updateProject,
+    deleteProject,
+  } = useProjects();
   const router = useRouter();
+
+  useEffect(() => {
+    if (!isAuthLoading && !user) {
+      router.push("/login");
+    }
+  }, [user, isAuthLoading, router]);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState<string>("all");
@@ -84,6 +98,27 @@ export default function HomePage() {
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 md:p-8">
+        {projectsError && (
+          <div className="mb-6 flex items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50/80 p-4 text-rose-900 shadow-sm">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0" />
+              <div>
+                <p className="text-xs font-semibold">Failed to load workspaces</p>
+                <p className="text-xs text-rose-700">{projectsError}</p>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => fetchProjects()}
+              className="text-xs gap-1.5 border-rose-200 bg-white hover:bg-rose-50 text-rose-800"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Retry
+            </Button>
+          </div>
+        )}
+
         <WorkspacesStatsBar projects={projects} />
 
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">

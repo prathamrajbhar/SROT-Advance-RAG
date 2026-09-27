@@ -6,13 +6,40 @@ import openpyxl
 
 def parse_csv(content_bytes: bytes) -> List[Dict[str, Any]]:
     text = content_bytes.decode("utf-8", errors="replace")
-    reader = csv.reader(io.StringIO(text))
+    if not text.strip():
+        return []
+
+    delimiter = ","
+    try:
+        sample = text[:2048]
+        if "\t" in sample and "," not in sample:
+            delimiter = "\t"
+        elif ";" in sample and "," not in sample:
+            delimiter = ";"
+        else:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
+            delimiter = dialect.delimiter
+    except Exception:
+        delimiter = ","
+
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
     rows = list(reader)
     if not rows:
         return []
 
     headers = [h.strip() for h in rows[0]]
     elements: List[Dict[str, Any]] = []
+
+    if len(rows) == 1:
+        elements.append({
+            "kind": "table_row",
+            "content": "Headers: " + ", ".join(headers),
+            "locator": {
+                "row_range": [1, 1],
+                "sheet": "Sheet1",
+            },
+        })
+        return elements
 
     # Batch rows in groups of 10 for table context
     batch_size = 10
@@ -51,8 +78,18 @@ def parse_xlsx(content_bytes: bytes) -> List[Dict[str, Any]]:
             continue
 
         headers = [str(h or f"Col_{i+1}").strip() for i, h in enumerate(rows[0])]
-        batch_size = 10
+        if len(rows) == 1:
+            elements.append({
+                "kind": "table_row",
+                "content": "Headers: " + ", ".join(headers),
+                "locator": {
+                    "row_range": [1, 1],
+                    "sheet": sheet_name,
+                },
+            })
+            continue
 
+        batch_size = 10
         for i in range(1, len(rows), batch_size):
             batch = rows[i : i + batch_size]
             batch_lines = []

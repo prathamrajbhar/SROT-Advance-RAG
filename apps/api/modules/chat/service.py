@@ -1,7 +1,7 @@
 import uuid
 from typing import Any, Dict, List, Optional
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from models.chat import AssistantTurn, Conversation, Message
 from modules.projects.service import verify_project_access
@@ -11,10 +11,31 @@ async def create_conversation(
     db: AsyncSession, project_id: uuid.UUID, user_id: uuid.UUID, title: Optional[str] = None
 ) -> Conversation:
     await verify_project_access(db, project_id, user_id)
+
+    # Check if an empty conversation with no messages already exists
+    empty_stmt = (
+        select(Conversation)
+        .outerjoin(Message, Conversation.id == Message.conversation_id)
+        .where(
+            Conversation.project_id == project_id,
+            Conversation.user_id == user_id,
+        )
+        .group_by(Conversation.id)
+        .having(func.count(Message.id) == 0)
+        .order_by(Conversation.created_at.desc())
+    )
+    existing_empty = (await db.execute(empty_stmt)).scalars().first()
+    if existing_empty:
+        if title and title not in ("New Conversation", "New Chat"):
+            existing_empty.title = title
+            await db.commit()
+            await db.refresh(existing_empty)
+        return existing_empty
+
     conv = Conversation(
         project_id=project_id,
         user_id=user_id,
-        title=title or "New Conversation",
+        title=title or "New Chat",
     )
     db.add(conv)
     await db.commit()

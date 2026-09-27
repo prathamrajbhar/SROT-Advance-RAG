@@ -42,6 +42,14 @@ async def stream_chat_response(
         # Save User Message
         user_msg = Message(conversation_id=conversation_id, role="user", content_md=query_text)
         db.add(user_msg)
+
+        # Auto-generate title on first message if default
+        if not conv.title or conv.title in ("New Chat", "New Conversation", "Untitled Chat", "Main Conversation"):
+            first_line = query_text.strip().split("\n")[0]
+            auto_title = (first_line[:36] + "...") if len(first_line) > 36 else first_line
+            if auto_title:
+                conv.title = auto_title
+
         await db.commit()
 
     # 1. Retrieval
@@ -93,20 +101,31 @@ async def stream_chat_response(
     prompt = f"Context:\n{context_str}\n\nUser Question:\n{query_text}"
 
     try:
+        system_prompt = (
+            "You are an enterprise factual QA assistant. Answer the user query strictly using the provided context.\n"
+            "Output ONLY a single valid JSON object strictly matching this schema:\n"
+            '{"answer_md": "<direct markdown formatted answer with bold highlights>", '
+            '"claims": [{"text": "<factual claim>", "citation_ids": ["<matching chunk uuid>"]}]}\n'
+            "Never output markdown headings like 'Answer' or 'Claims'. Never output prose outside the JSON object."
+        )
         llm_resp = await llm.generate(
             messages=[{"role": "user", "content": prompt}],
-            system_prompt='Answer strictly from context in JSON format: {"answer_md": "...", "claims": [{"text": "...", "citation_ids": ["uuid"]}]}',
+            system_prompt=system_prompt,
             temperature=0.2,
             json_mode=True,
         )
     except Exception as e:
-        error_msg = str(e)
+        raw_error = str(e)
         latency_ms = int((time.perf_counter() - start_time) * 1000)
+        user_friendly_error = (
+            "I encountered a temporary issue communicating with the language model provider. "
+            "Please verify your model service is active and try your question again in a moment."
+        )
         async with async_session_factory() as db:
             assistant_msg = Message(
                 conversation_id=conversation_id,
                 role="assistant",
-                content_md=f"Error generating response: {error_msg}",
+                content_md=user_friendly_error,
             )
             db.add(assistant_msg)
             await db.flush()
@@ -122,8 +141,8 @@ async def stream_chat_response(
             db.add(turn)
             await db.commit()
 
-        yield f"event: error\ndata: {json.dumps({'code': 'LLM_ERROR', 'message': error_msg})}\n\n"
-        yield f"event: final\ndata: {json.dumps({'message_id': str(assistant_msg.id), 'verdict': 'error', 'confidence': 0.0, 'content_md': assistant_msg.content_md})}\n\n"
+        yield f"event: error\ndata: {json.dumps({'code': 'LLM_ERROR', 'message': raw_error})}\n\n"
+        yield f"event: final\ndata: {json.dumps({'message_id': str(assistant_msg.id), 'verdict': 'error', 'confidence': 0.0, 'content_md': user_friendly_error, 'error_detail': raw_error})}\n\n"
         return
 
     answer_md, claims = extract_llm_json_response(llm_resp.content)

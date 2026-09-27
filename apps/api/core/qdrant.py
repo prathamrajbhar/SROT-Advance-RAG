@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Dict, List, Optional
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models as rest_models
@@ -5,18 +6,25 @@ from core.config import get_settings
 
 settings = get_settings()
 
-qdrant_client: Optional[AsyncQdrantClient] = None
+_qdrant_clients: Dict[int, AsyncQdrantClient] = {}
 
 
 def get_qdrant() -> AsyncQdrantClient:
-    global qdrant_client
-    if qdrant_client is None:
-        qdrant_client = AsyncQdrantClient(
+    try:
+        loop = asyncio.get_running_loop()
+        loop_id = id(loop)
+    except RuntimeError:
+        loop_id = 0
+
+    client = _qdrant_clients.get(loop_id)
+    if client is None:
+        client = AsyncQdrantClient(
             url=settings.QDRANT_URL,
             api_key=settings.QDRANT_API_KEY,
             check_compatibility=False,
         )
-    return qdrant_client
+        _qdrant_clients[loop_id] = client
+    return client
 
 
 def get_collection_name(project_id: str) -> str:

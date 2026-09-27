@@ -9,7 +9,7 @@ from core.qdrant import ensure_project_collection, upsert_chunks
 from core.redis import get_redis
 from models.document import Chunk, Document, IngestStatus
 from modules.ingestion.chunker import chunk_elements
-from modules.ingestion.parsers.media import parse_media
+from modules.ingestion.parsers.media import parse_image, parse_media
 from modules.ingestion.parsers.pdf_docx import parse_docx, parse_pdf
 from modules.ingestion.parsers.spreadsheet import parse_csv, parse_xlsx
 from modules.ingestion.parsers.text_md import parse_text_markdown
@@ -38,16 +38,21 @@ async def process_document_ingestion(
         filename = doc.filename.lower()
 
         if "pdf" in mime or filename.endswith(".pdf"):
-            elements = parse_pdf(file_bytes)
+            elements = await parse_pdf(file_bytes)
         elif "wordprocessingml" in mime or "docx" in mime or filename.endswith((".docx", ".doc")):
             elements = parse_docx(file_bytes)
         elif "spreadsheet" in mime or "excel" in mime or filename.endswith((".xlsx", ".xls")):
             elements = parse_xlsx(file_bytes)
-        elif "csv" in mime or filename.endswith(".csv"):
+        elif "csv" in mime or "tsv" in mime or "tab-separated" in mime or filename.endswith((".csv", ".tsv", ".tab")):
             elements = parse_csv(file_bytes)
         elif (
-            any(audio_fmt in mime for audio_fmt in ["audio", "video", "mp4", "mp3", "wav", "m4a"])
-            or filename.endswith((".mp3", ".mp4", ".wav", ".m4a"))
+            any(img_fmt in mime for img_fmt in ["image", "png", "jpeg", "jpg", "webp", "gif", "bmp"])
+            or filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"))
+        ):
+            elements = await parse_image(file_bytes, doc.filename, doc.mime_type)
+        elif (
+            any(audio_fmt in mime for audio_fmt in ["audio", "video", "mp4", "mp3", "wav", "m4a", "webm", "ogg", "mpd", "m4v", "mov", "avi"])
+            or filename.endswith((".mp3", ".mp4", ".wav", ".m4a", ".webm", ".ogg", ".mpd", ".m4v", ".mov", ".avi"))
         ):
             elements = await parse_media(file_bytes, doc.filename)
         else:

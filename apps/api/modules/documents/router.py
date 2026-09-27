@@ -13,6 +13,7 @@ from modules.documents.schemas import (
 )
 from modules.documents.service import (
     delete_document,
+    get_document_chunks,
     get_document_content_url,
     get_document_status,
     list_documents,
@@ -74,6 +75,16 @@ async def get_content_url_endpoint(
 ) -> PresignedUrlResponse:
     url = await get_document_content_url(db, project_id, doc_id, user.id)
     return PresignedUrlResponse(url=url, expires_in=300)
+
+
+@router.get("/{doc_id}/chunks", response_model=Dict[str, Any])
+async def get_document_chunks_endpoint(
+    project_id: uuid.UUID,
+    doc_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    return await get_document_chunks(db, project_id, doc_id, user.id)
 
 
 @router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)

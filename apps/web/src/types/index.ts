@@ -57,6 +57,24 @@ export interface DocumentItem {
   indexed_at?: string;
 }
 
+export interface ChunkItem {
+  id: string;
+  chunk_index: number;
+  parent_id?: string | null;
+  kind: string;
+  token_count: number;
+  content: string;
+  locator?: Record<string, unknown> | null;
+  content_hash: string;
+  embedding_id?: string | null;
+}
+
+export interface DocumentChunksResponse {
+  document: DocumentItem;
+  total_chunks: number;
+  chunks: ChunkItem[];
+}
+
 export type Verdict = "answered" | "insufficient_evidence" | "unverified" | "error";
 
 export interface Citation {
@@ -88,6 +106,7 @@ export interface ChatMessage {
   model_name?: string;
   citations?: Citation[];
   searched_documents?: { document_id: string; filename: string }[];
+  error_detail?: string;
 }
 
 export interface Conversation {

@@ -59,6 +59,9 @@ export default function ProjectChatPage({
   }, [projectId]);
 
   const handleCreateNewSession = async () => {
+    if (activeConversationId && messages.length === 0) {
+      return;
+    }
     await createConversation("New Chat");
   };
 
@@ -120,6 +123,8 @@ export default function ProjectChatPage({
                   messages={messages}
                   currentStage={currentStage}
                   onCitationClick={(cit) => setSelectedCitation(cit)}
+                  onRetry={(queryText) => sendMessage(queryText, false)}
+                  onEdit={(_msgId, newContent) => sendMessage(newContent, false)}
                 />
               </div>
             )}

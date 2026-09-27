@@ -130,19 +130,43 @@ export function useChatStream(conversationId: string | null) {
                   model_name: data.model_name,
                   citations: [...citations],
                   searched_documents: data.searched_documents,
+                  error_detail: data.error_detail,
                 },
               ];
             });
           }
         }
       }
-    } catch (err) {
-      setCurrentStage(null);
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : "Failed to connect to chat stream";
+      setMessages((prev) => {
+        const others = prev.filter((m) => m.id !== assistantMsgId);
+        return [
+          ...others,
+          {
+            id: assistantMsgId,
+            role: "assistant",
+            content_md: "Failed to communicate with the retrieval service. Please check your connection and try again.",
+            created_at: new Date().toISOString(),
+            verdict: "error",
+            confidence: 0,
+            error_detail: errorMsg,
+          },
+        ];
+      });
     } finally {
       setIsStreaming(false);
       setCurrentStage(null);
     }
   };
 
-  return { messages, setMessages, isStreaming, isLoadingHistory, currentStage, sendMessage, refreshHistory: fetchHistory };
+  return {
+    messages,
+    setMessages,
+    isStreaming,
+    isLoadingHistory,
+    currentStage,
+    sendMessage,
+    refreshHistory: fetchHistory,
+  };
 }
