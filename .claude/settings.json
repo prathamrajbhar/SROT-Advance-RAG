@@ -1,0 +1,17 @@
+{
+  "commands": {
+    "spec": ".claude/commands/spec.md",
+    "plan": ".claude/commands/plan.md",
+    "build": ".claude/commands/build.md",
+    "test": ".claude/commands/test.md",
+    "review": ".claude/commands/review.md",
+    "code-simplify": ".claude/commands/code-simplify.md",
+    "ship": ".claude/commands/ship.md",
+    "webperf": ".claude/commands/webperf.md"
+  },
+  "rules": [
+    ".claude/rules/anti-vibecoding.md",
+    ".claude/rules/fullstack-nextjs-fastapi.md",
+    ".claude/rules/code-quality.md"
+  ]
+}
