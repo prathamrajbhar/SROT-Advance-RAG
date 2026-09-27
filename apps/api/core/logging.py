@@ -8,20 +8,15 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
-class EnterpriseConsoleFormatter(logging.Formatter):
-    """Clean, human-readable, colorized log formatter for enterprise developer experience."""
-
-    # ANSI Colors
+class ConsoleFormatter(logging.Formatter):
     RESET = "\033[0m"
     BOLD = "\033[1m"
     DIM = "\033[2m"
 
-    # Foreground colors
     RED = "\033[31m"
     GREEN = "\033[32m"
     YELLOW = "\033[33m"
     BLUE = "\033[34m"
-    MAGENTA = "\033[35m"
     CYAN = "\033[36m"
     GRAY = "\033[90m"
 
@@ -57,7 +52,7 @@ class EnterpriseConsoleFormatter(logging.Formatter):
         level_color = self.LEVEL_COLORS.get(record.levelname, self.RESET)
         level_badge = f"{level_color}{record.levelname:<5}{self.RESET}"
 
-        # Dedicated clean format for HTTP request logs
+        # HTTP request lines get method, path, status, latency
         if hasattr(record, "status_code") and hasattr(record, "path"):
             method = getattr(record, "method", "")
             method_color = self.METHOD_COLORS.get(method, self.BOLD)
@@ -98,12 +93,11 @@ class EnterpriseConsoleFormatter(logging.Formatter):
 
 def setup_logging() -> None:
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(EnterpriseConsoleFormatter())
+    handler.setFormatter(ConsoleFormatter())
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
     root_logger.handlers = [handler]
 
-    # Silence noisy third-party and database loggers
     for noisy in [
         "uvicorn.access",
         "sqlalchemy.engine",
@@ -121,6 +115,10 @@ def setup_logging() -> None:
 
 logger = logging.getLogger("srot.http")
 
+QUIET_PATHS = frozenset(
+    {"/health", "/ready", "/api/v1/health", "/api/v1/ready", "/docs", "/openapi.json"}
+)
+
 
 class RequestTracingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
@@ -135,8 +133,8 @@ class RequestTracingMiddleware(BaseHTTPMiddleware):
             response.headers["X-Trace-Id"] = trace_id
             response.headers["X-Process-Time-Ms"] = str(latency_ms)
 
-            # Skip health check noise from logs
-            if request.url.path not in ("/api/v1/health", "/docs", "/openapi.json"):
+            # keep probe traffic out of the log
+            if request.url.path not in QUIET_PATHS:
                 extra = {
                     "trace_id": trace_id,
                     "method": request.method,
@@ -161,4 +159,4 @@ class RequestTracingMiddleware(BaseHTTPMiddleware):
                     "latency_ms": latency_ms,
                 },
             )
-            raise exc
+            raise

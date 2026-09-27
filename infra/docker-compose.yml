@@ -1,4 +1,6 @@
-version: '3.8'
+# Local development infrastructure.
+# Dedicated 7xxx host ports keep this project's databases isolated from
+# every other project sharing this machine.
 
 services:
   postgres:
@@ -19,58 +21,5 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:7.4-alpine
-    container_name: srot-redis
-    restart: unless-stopped
-    ports:
-      - "7379:6379"
-    volumes:
-      - srot_redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  qdrant:
-    image: qdrant/qdrant:v1.13.2
-    container_name: srot-qdrant
-    restart: unless-stopped
-    ports:
-      - "7333:6333"
-      - "7334:6334"
-    ulimits:
-      nofile:
-        soft: 65535
-        hard: 65535
-    volumes:
-      - srot_qdrant_data:/qdrant/storage
-    healthcheck:
-      test: ["CMD-SHELL", "/bin/bash -c 'echo > /dev/tcp/localhost/6333'"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  localstack:
-    image: localstack/localstack:3.8.0
-    container_name: srot-localstack
-    restart: unless-stopped
-    ports:
-      - "7566:4566"
-    environment:
-      - SERVICES=s3
-      - AWS_DEFAULT_REGION=us-east-1
-    volumes:
-      - srot_localstack_data:/var/lib/localstack
-    healthcheck:
-      test: ["CMD-SHELL", "/bin/bash -c 'echo > /dev/tcp/localhost/4566'"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
 volumes:
   srot_pgsql_data:
-  srot_redis_data:
-  srot_qdrant_data:
-  srot_localstack_data:

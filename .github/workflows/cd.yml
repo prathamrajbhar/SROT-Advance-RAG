@@ -2,8 +2,7 @@ name: Production Deployment (Vercel Frontend & Server Stack)
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -11,35 +10,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ============================================================================
-  # 1. Frontend Deployment (Vercel Production Deploy)
-  # ============================================================================
   deploy-frontend:
     name: Deploy Frontend to Vercel
     runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Deploy to Vercel Production
+      - name: Deploy to Vercel
         if: env.VERCEL_TOKEN != ''
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         working-directory: apps/web
         run: |
-          npx --yes vercel@latest deploy --prod --token="$VERCEL_TOKEN" --yes --build-env API_URL=https://srot_backend.bytemap.in
+          npx --yes vercel@latest deploy --prod \
+            --token="$VERCEL_TOKEN" \
+            --yes \
+            --build-env API_URL=https://srot_backend.bytemap.in
 
-  # ============================================================================
-  # 2. Clean Backend Server Deployment (Docker DBs + PM2 Apps)
-  # ============================================================================
   deploy-backend:
     name: Deploy Backend via PM2 & Docker to Server
     runs-on: ubuntu-latest
@@ -47,14 +41,14 @@ jobs:
     if: always()
 
     steps:
-      - name: Connect to Tailscale Network
+      - name: Connect to Tailscale
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      - name: Deploy via SSH
+      - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.3
         env:
           PROD_ENV_FILE: ${{ secrets.PROD_ENV_FILE }}
@@ -68,106 +62,62 @@ jobs:
           script: |
             set -e
 
-            # --------------------------------------------------------------------------
-            # Stage 0: Environment & Shell Path Setup
-            # --------------------------------------------------------------------------
             [ -f "$HOME/.profile" ] && source "$HOME/.profile" || true
             [ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc" || true
             [ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh" || true
             export PATH="$HOME/.nvm/versions/node/$(ls $HOME/.nvm/versions/node 2>/dev/null | tail -n 1)/bin:$HOME/.npm-global/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"
 
             PROJECT_DIR="/home/jarvis/SharedDrive/Force/SROT-Advance-RAG"
-            echo "🚀 [1/8] Navigating to project directory: $PROJECT_DIR"
+            echo "Syncing $PROJECT_DIR from origin/main"
             cd "$PROJECT_DIR"
-
-            # --------------------------------------------------------------------------
-            # Stage 1: Clean Code Sync
-            # --------------------------------------------------------------------------
-            echo "📥 [2/8] Fetching and syncing latest code from origin/main..."
             git fetch origin main
             git reset --hard origin/main
 
-            # --------------------------------------------------------------------------
-            # Stage 2: Clean Environment Secrets Injection
-            # --------------------------------------------------------------------------
-            echo "🔐 [3/8] Injecting production configuration into .env..."
             if [ -n "$PROD_ENV_FILE" ]; then
               printf "%s\n" "$PROD_ENV_FILE" > .env
               chmod 600 .env
-              echo "✅ .env file written and secured."
+              echo "Wrote production .env"
             else
-              echo "ℹ️ Retaining existing .env file."
+              echo "No PROD_ENV_FILE secret, keeping existing .env"
             fi
 
-            # --------------------------------------------------------------------------
-            # Stage 3: Dedicated SROT Docker Databases (Port 7432, 7379, 7333, 7566)
-            # --------------------------------------------------------------------------
-            echo "🐳 [4/8] Starting isolated Docker database stack (Postgres:7432, Redis:7379, Qdrant:7333, S3:7566)..."
+            echo "Starting PostgreSQL"
             docker compose -f infra/docker-compose.yml up -d --remove-orphans
-            
-            # Wait for database readiness
-            echo "⏳ Waiting for PostgreSQL container on port 7432..."
             for i in {1..30}; do
               if docker compose -f infra/docker-compose.yml exec -T postgres pg_isready -U private_pgsql -d srot >/dev/null 2>&1; then
-                echo "✅ PostgreSQL is ready and accepting connections."
+                echo "PostgreSQL ready"
                 break
+              fi
+              if [ "$i" -eq 30 ]; then
+                echo "PostgreSQL never became ready"
+                exit 1
               fi
               sleep 1
             done
 
-            # --------------------------------------------------------------------------
-            # Stage 4: Python Virtualenv & Dependency Installation
-            # --------------------------------------------------------------------------
-            echo "🐍 [5/8] Setting up Python virtual environment..."
             cd "$PROJECT_DIR/apps/api"
-            if [ ! -d ".venv" ]; then
-              python3 -m venv .venv
-            fi
-            source .venv/bin/activate
-            python -m pip install --upgrade pip setuptools wheel
-            pip install -r requirements.txt
+            [ -d .venv ] || python3 -m venv .venv
+            .venv/bin/python -m pip install --upgrade pip setuptools wheel
+            .venv/bin/python -m pip install -r requirements.txt
 
-            # --------------------------------------------------------------------------
-            # Stage 5: Pre-Cache Open-Source AI Model Weights
-            # --------------------------------------------------------------------------
-            echo "🧠 [6/8] Provisioning & verifying FastEmbed and AI model weights..."
-            mkdir -p "$PROJECT_DIR/models"
-            python "$PROJECT_DIR/scripts/download_models.py" || true
+            .venv/bin/alembic upgrade head
 
-            # --------------------------------------------------------------------------
-            # Stage 6: Database Schema Migrations (Alembic)
-            # --------------------------------------------------------------------------
-            echo "🗄️ [7/8] Applying Alembic database migrations..."
-            cd "$PROJECT_DIR/apps/api"
-            if [ -f "alembic.ini" ]; then
-              python -m alembic upgrade head
-              echo "✅ Database migrations applied successfully."
-            fi
+            command -v pm2 >/dev/null 2>&1 || { echo "pm2 not found"; exit 1; }
+            pm2 delete srot-api 2>/dev/null || true
+            pm2 start ecosystem.config.cjs
+            pm2 save
 
-            # --------------------------------------------------------------------------
-            # Stage 7: Clean PM2 Process Lifecycle (Port 8087)
-            # --------------------------------------------------------------------------
-            echo "🔄 [8/8] Starting / Reloading backend services in PM2..."
-            cd "$PROJECT_DIR/apps/api"
-            if command -v pm2 >/dev/null 2>&1; then
-              # Clean restart or in-place reload with updated env
-              pm2 delete srot-api srot-worker 2>/dev/null || true
-              pm2 start ecosystem.config.cjs
-              pm2 save
-              echo "✅ PM2 processes (srot-api & srot-worker) active and saved."
-            else
-              echo "❌ PM2 command not found."
-              exit 1
-            fi
+            echo "Waiting for health on :8087"
+            for i in {1..15}; do
+              if curl -sf http://127.0.0.1:8087/health >/dev/null 2>&1; then
+                echo "Health check passed: $(curl -s http://127.0.0.1:8087/health)"
+                echo "Deployment complete"
+                exit 0
+              fi
+              sleep 2
+            done
 
-            # --------------------------------------------------------------------------
-            # Post-Deployment Deep Health Probe
-            # --------------------------------------------------------------------------
-            echo "🩺 Performing health verification probe on port 8087..."
-            sleep 3
-            if command -v curl >/dev/null 2>&1; then
-              HEALTH_RESP=$(curl -s http://127.0.0.1:8087/health || true)
-              echo "Health Check Result: $HEALTH_RESP"
-            fi
-
-            echo "🎉 Fresh deployment completed successfully!"
+            echo "Backend failed its health check"
+            curl -s http://127.0.0.1:8087/health || echo "(no response)"
+            pm2 logs srot-api --lines 50 --nostream || true
+            exit 1

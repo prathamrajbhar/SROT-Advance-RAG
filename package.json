@@ -2,21 +2,19 @@
   "name": "srot-monorepo",
   "version": "2.0.0",
   "private": true,
-  "description": "Enterprise Multi-Project Multimodal RAG Platform",
+  "description": "Next.js + FastAPI production template",
   "workspaces": [
     "apps/*"
   ],
   "scripts": {
     "setup": "bash scripts/setup.sh",
-    "dev": "concurrently -n \"api,web,worker\" -c \"blue,green,magenta\" \"npm run dev:api\" \"npm run dev:web\" \"npm run dev:worker\"",
+    "dev": "concurrently -n \"api,web\" -c \"blue,green\" \"npm run dev:api\" \"npm run dev:web\"",
     "dev:api": "cd apps/api && .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
     "dev:web": "cd apps/web && npm run dev",
-    "dev:worker": "cd apps/api && .venv/bin/celery -A modules.ingestion.tasks worker --loglevel=info",
-    "test": "npm run test:api && npm run test:web",
+    "test": "npm run test:api",
     "test:api": "cd apps/api && .venv/bin/pytest -v",
-    "test:web": "cd apps/web && npm test",
+    "typecheck": "cd apps/web && npm run typecheck",
     "migrate": "cd apps/api && .venv/bin/alembic upgrade head",
-    "models:download": "cd apps/api && .venv/bin/python ../../scripts/download_models.py",
     "health": "bash scripts/check-health.sh"
   },
 
