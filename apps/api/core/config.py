@@ -13,7 +13,15 @@ class Settings(BaseSettings):
     )
 
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://private_pgsql:apple@localhost:7432/srot"
+    DATABASE_URL: str
+
+    # Infrastructure
+    REDIS_URL: str = "redis://localhost:7379/0"
+    QDRANT_URL: str = "http://localhost:7333"
+
+    # Cryptographic Vault
+    ENCRYPTION_MASTER_KEY: str
+
 
     # Runtime
     ENVIRONMENT: str = "development"

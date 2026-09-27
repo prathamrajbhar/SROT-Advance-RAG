@@ -6,6 +6,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from core.config import get_settings
 from core.database import Base
+import models  # noqa: F401 - Register all models with Base.metadata
 
 config = context.config
 
@@ -16,6 +17,7 @@ settings = get_settings()
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 target_metadata = Base.metadata
+
 
 
 def run_migrations_offline() -> None:
@@ -40,12 +42,17 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = settings.DATABASE_URL
+    connect_args = {}
+    if "localhost" in settings.DATABASE_URL or "127.0.0.1" in settings.DATABASE_URL:
+        connect_args["ssl"] = False
+
     connectable = async_engine_from_config(
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
+
 
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

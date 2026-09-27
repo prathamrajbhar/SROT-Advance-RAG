@@ -7,12 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 os.environ.setdefault("ENVIRONMENT", "test")
-os.environ.setdefault(
-    "DATABASE_URL",
-    "postgresql+asyncpg://private_pgsql:apple@localhost:7432/srot",
-)
-os.environ.setdefault("CORS_ORIGINS", '["http://localhost:3000"]')
 
+
+import models  # noqa: F401 - Ensure all models are registered on Base.metadata
 from core.config import get_settings  # noqa: E402
 from core.database import Base, get_db  # noqa: E402
 from main import app  # noqa: E402
@@ -22,17 +19,28 @@ settings = get_settings()
 
 @pytest_asyncio.fixture
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Isolated schema per test, against the real Postgres dialect."""
-    engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+    """Isolated transactional session per test against PostgreSQL."""
+    connect_args = {}
+    if "localhost" in settings.DATABASE_URL or "127.0.0.1" in settings.DATABASE_URL:
+        connect_args["ssl"] = False
 
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as session:
+    engine = create_async_engine(
+        settings.DATABASE_URL,
+        poolclass=NullPool,
+        connect_args=connect_args,
+    )
+
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        session = AsyncSession(bind=connection, expire_on_commit=False)
+
         yield session
 
+        await session.close()
+        await transaction.rollback()
+
     await engine.dispose()
+
 
 
 @pytest_asyncio.fixture
