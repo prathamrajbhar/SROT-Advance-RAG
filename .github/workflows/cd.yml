@@ -92,13 +92,10 @@ jobs:
               echo "✅ .env updated and secured."
             fi
 
-            # Stage 4: Docker Infrastructure Services (PostgreSQL, Redis, Qdrant, LocalStack)
-            echo "📦 [4/7] Ensuring infrastructure containers are active..."
-            docker compose -f infra/docker-compose.yml up -d
-
-            # Stage 5: Python Virtual Environment & Dependencies
-            echo "🐍 [5/7] Configuring Python virtualenv & dependencies..."
-            cd apps/api
+            # Stage 4: Python Virtual Environment & Dependencies
+            echo "🐍 [4/7] Configuring Python virtual environment & dependencies..."
+            ROOT_DIR="/home/jarvis/SharedDrive/Force/SROT-Advance-RAG"
+            cd "$ROOT_DIR/apps/api"
             if [ ! -d ".venv" ]; then
               python3 -m venv .venv
             fi
@@ -106,8 +103,20 @@ jobs:
             python -m pip install --upgrade pip setuptools wheel
             pip install -r requirements.txt
 
+            # Stage 5: Smart Infrastructure Probing (Safe for multi-project server)
+            echo "📦 [5/7] Checking host infrastructure services (Postgres, Redis, Qdrant)..."
+            MISSING_SERVICES=$(python "$ROOT_DIR/scripts/check_infra.py" --missing 2>/dev/null || true)
+            cd "$ROOT_DIR"
+            if [ -n "$MISSING_SERVICES" ]; then
+              echo "Starting only missing services in Docker without touching active host ports: $MISSING_SERVICES"
+              docker compose -f infra/docker-compose.yml up -d $MISSING_SERVICES || true
+            else
+              echo "✅ All infrastructure services are already active on host. Docker bypassed."
+            fi
+
             # Stage 6: Database Schema Migrations
             echo "🗄️ [6/7] Running database migrations..."
+            cd "$ROOT_DIR/apps/api"
             if [ -f "alembic.ini" ]; then
               python -m alembic upgrade head || true
             fi
