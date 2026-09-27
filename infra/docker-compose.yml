@@ -12,7 +12,7 @@ services:
     ports:
       - "7432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - srot_pgsql_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U private_pgsql -d srot"]
       interval: 5s
@@ -26,7 +26,7 @@ services:
     ports:
       - "7379:6379"
     volumes:
-      - redis_data:/data
+      - srot_redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -45,7 +45,7 @@ services:
         soft: 65535
         hard: 65535
     volumes:
-      - qdrant_data:/qdrant/storage
+      - srot_qdrant_data:/qdrant/storage
     healthcheck:
       test: ["CMD-SHELL", "/bin/bash -c 'echo > /dev/tcp/localhost/6333'"]
       interval: 5s
@@ -62,7 +62,7 @@ services:
       - SERVICES=s3
       - AWS_DEFAULT_REGION=us-east-1
     volumes:
-      - localstack_data:/var/lib/localstack
+      - srot_localstack_data:/var/lib/localstack
     healthcheck:
       test: ["CMD-SHELL", "/bin/bash -c 'echo > /dev/tcp/localhost/4566'"]
       interval: 5s
@@ -70,7 +70,7 @@ services:
       retries: 5
 
 volumes:
-  postgres_data:
-  redis_data:
-  qdrant_data:
-  localstack_data:
+  srot_pgsql_data:
+  srot_redis_data:
+  srot_qdrant_data:
+  srot_localstack_data:
