@@ -101,8 +101,9 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 
 
 # API Routers
+app.include_router(health_router)  # /health & /ready at root
 api_v1_prefix = "/api/v1"
-app.include_router(health_router, prefix=api_v1_prefix)
+app.include_router(health_router, prefix=api_v1_prefix)  # /api/v1/health & /api/v1/ready
 app.include_router(auth_router, prefix=api_v1_prefix)
 app.include_router(projects_router, prefix=api_v1_prefix)
 app.include_router(documents_router, prefix=api_v1_prefix)
