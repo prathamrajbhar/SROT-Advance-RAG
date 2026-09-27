@@ -98,10 +98,41 @@ class Settings(BaseSettings):
     @classmethod
     def assemble_database_url(cls, v: object) -> str:
         if isinstance(v, str):
-            if v.startswith("postgresql://"):
-                return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+            res = v
+            if res.startswith("postgresql://"):
+                res = res.replace("postgresql://", "postgresql+asyncpg://", 1)
+            # Normalize docker internal hostname to localhost if running on host
+            if "@postgres:" in res:
+                res = res.replace("@postgres:", "@localhost:", 1)
+            return res
+        return str(v)
+
+    @field_validator("REDIS_URL", mode="before")
+    @classmethod
+    def assemble_redis_url(cls, v: object) -> str:
+        if isinstance(v, str):
+            if "://redis:" in v:
+                return v.replace("://redis:", "://localhost:", 1)
             return v
         return str(v)
+
+    @field_validator("QDRANT_URL", mode="before")
+    @classmethod
+    def assemble_qdrant_url(cls, v: object) -> str:
+        if isinstance(v, str):
+            if "://qdrant:" in v:
+                return v.replace("://qdrant:", "://localhost:", 1)
+            return v
+        return str(v)
+
+    @field_validator("S3_ENDPOINT_URL", mode="before")
+    @classmethod
+    def assemble_s3_url(cls, v: object) -> Optional[str]:
+        if isinstance(v, str):
+            if "://localstack:" in v:
+                return v.replace("://localstack:", "://localhost:", 1)
+            return v
+        return v
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

@@ -24,9 +24,20 @@ class EmbedderAdapter(BaseEmbedder):
         self.model = getattr(settings, "EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
         self.embedder_url = settings.EMBEDDER_URL or "http://localhost:11434"
         
-        # Resolve workspace models directory
-        workspace_models = Path(settings.MODELS_DIR) if settings.MODELS_DIR else Path(__file__).resolve().parent.parent.parent.parent.parent / "models"
-        self.models_dir = str(workspace_models)
+        # Resolve workspace models directory with fallback if /app is not writable
+        target_dir = None
+        if settings.MODELS_DIR and settings.MODELS_DIR != "/app/models":
+            try:
+                p = Path(settings.MODELS_DIR)
+                p.mkdir(parents=True, exist_ok=True)
+                target_dir = p
+            except (PermissionError, OSError):
+                pass
+        if target_dir is None:
+            target_dir = Path(__file__).resolve().parents[4] / "models"
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+        self.models_dir = str(target_dir)
         self._local_model = None
         self._dimension: Optional[int] = None
 

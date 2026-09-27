@@ -23,9 +23,20 @@ class RerankerAdapter(BaseReranker):
         self.model = getattr(settings, "RERANKER_MODEL", "BAAI/bge-reranker-base")
         self.reranker_url = settings.RERANKER_URL
         
-        # Resolve workspace models directory
-        workspace_models = Path(settings.MODELS_DIR) if settings.MODELS_DIR else Path(__file__).resolve().parent.parent.parent.parent.parent / "models"
-        self.models_dir = str(workspace_models)
+        # Resolve workspace models directory with fallback if /app is not writable
+        target_dir = None
+        if settings.MODELS_DIR and settings.MODELS_DIR != "/app/models":
+            try:
+                p = Path(settings.MODELS_DIR)
+                p.mkdir(parents=True, exist_ok=True)
+                target_dir = p
+            except (PermissionError, OSError):
+                pass
+        if target_dir is None:
+            target_dir = Path(__file__).resolve().parents[4] / "models"
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+        self.models_dir = str(target_dir)
         self._local_reranker = None
 
         if self.provider == "local":
