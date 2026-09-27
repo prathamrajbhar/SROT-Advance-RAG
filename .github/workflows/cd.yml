@@ -65,7 +65,6 @@ jobs:
           port: 22
           timeout: 900s
           envs: PROD_ENV_FILE
-          script_stop: true
           script: |
             set -e
 
