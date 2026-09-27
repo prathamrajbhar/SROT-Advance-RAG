@@ -101,15 +101,15 @@ jobs:
             fi
 
             # --------------------------------------------------------------------------
-            # Stage 3: Dedicated Docker Databases (Port 5434, 6380, 6333, 4566)
+            # Stage 3: Dedicated SROT Docker Databases (Port 7432, 7379, 7333, 7566)
             # --------------------------------------------------------------------------
-            echo "🐳 [4/8] Starting isolated Docker database stack (Postgres:5434, Redis:6380, Qdrant:6333, S3:4566)..."
+            echo "🐳 [4/8] Starting isolated Docker database stack (Postgres:7432, Redis:7379, Qdrant:7333, S3:7566)..."
             docker compose -f infra/docker-compose.yml up -d --remove-orphans
             
             # Wait for database readiness
-            echo "⏳ Waiting for PostgreSQL container on port 5434..."
+            echo "⏳ Waiting for PostgreSQL container on port 7432..."
             for i in {1..30}; do
-              if docker compose -f infra/docker-compose.yml exec -T postgres pg_isready -U postgres -d srot >/dev/null 2>&1; then
+              if docker compose -f infra/docker-compose.yml exec -T postgres pg_isready -U private_pgsql -d srot >/dev/null 2>&1; then
                 echo "✅ PostgreSQL is ready and accepting connections."
                 break
               fi

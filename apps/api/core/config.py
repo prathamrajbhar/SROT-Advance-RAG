@@ -12,16 +12,16 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Database & Cache (Docker Dedicated Ports)
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5434/srot"
-    REDIS_URL: str = "redis://localhost:6380/0"
+    # Database & Cache (Dedicated SROT Isolated Ports)
+    DATABASE_URL: str = "postgresql+asyncpg://private_pgsql:apple@localhost:7432/srot"
+    REDIS_URL: str = "redis://localhost:7379/0"
 
-    # Vector DB
-    QDRANT_URL: str = "http://localhost:6333"
+    # Vector DB (Dedicated SROT Isolated Port)
+    QDRANT_URL: str = "http://localhost:7333"
     QDRANT_API_KEY: Optional[str] = None
 
-    # Storage (AWS S3 or LocalStack)
-    S3_ENDPOINT_URL: Optional[str] = "http://localhost:4566"
+    # Storage (AWS S3 or LocalStack on Dedicated Port)
+    S3_ENDPOINT_URL: Optional[str] = "http://localhost:7566"
     S3_REGION: str = "us-east-1"
     S3_BUCKET: str = "srot"
     S3_ACCESS_KEY: str = "test"
@@ -64,7 +64,6 @@ class Settings(BaseSettings):
     INTERNAL_MODEL_TOKEN: str = "internal_secret_token"
     MODELS_DIR: Optional[str] = None
 
-
     # Tracing
     LANGFUSE_HOST: Optional[str] = "http://localhost:3001"
     LANGFUSE_PUBLIC_KEY: Optional[str] = "pk-lf-test"
@@ -98,41 +97,10 @@ class Settings(BaseSettings):
     @classmethod
     def assemble_database_url(cls, v: object) -> str:
         if isinstance(v, str):
-            res = v
-            if res.startswith("postgresql://"):
-                res = res.replace("postgresql://", "postgresql+asyncpg://", 1)
-            # Normalize docker internal hostname to localhost if running on host
-            if "@postgres:" in res:
-                res = res.replace("@postgres:", "@localhost:", 1)
-            return res
-        return str(v)
-
-    @field_validator("REDIS_URL", mode="before")
-    @classmethod
-    def assemble_redis_url(cls, v: object) -> str:
-        if isinstance(v, str):
-            if "://redis:" in v:
-                return v.replace("://redis:", "://localhost:", 1)
+            if v.startswith("postgresql://"):
+                return v.replace("postgresql://", "postgresql+asyncpg://", 1)
             return v
         return str(v)
-
-    @field_validator("QDRANT_URL", mode="before")
-    @classmethod
-    def assemble_qdrant_url(cls, v: object) -> str:
-        if isinstance(v, str):
-            if "://qdrant:" in v:
-                return v.replace("://qdrant:", "://localhost:", 1)
-            return v
-        return str(v)
-
-    @field_validator("S3_ENDPOINT_URL", mode="before")
-    @classmethod
-    def assemble_s3_url(cls, v: object) -> Optional[str]:
-        if isinstance(v, str):
-            if "://localstack:" in v:
-                return v.replace("://localstack:", "://localhost:", 1)
-            return v
-        return v
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
