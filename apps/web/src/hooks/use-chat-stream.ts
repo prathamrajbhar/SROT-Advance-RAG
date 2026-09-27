@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { getAccessToken, apiFetch } from "@/lib/api-client";
+import { API_CONFIG } from "@/config/api";
 import { ChatMessage, Citation } from "@/types";
 
 export function useChatStream(conversationId: string | null) {
@@ -94,7 +95,7 @@ export function useChatStream(conversationId: string | null) {
       if (token) headers["Authorization"] = `Bearer ${token}`;
 
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1"}/conversations/${targetConvId}/messages`,
+        `${API_CONFIG.baseUrl}/conversations/${targetConvId}/messages`,
         {
           method: "POST",
           headers,

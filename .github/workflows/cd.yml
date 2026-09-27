@@ -22,17 +22,20 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Deploy to Vercel Production
-        uses: amondnet/vercel-action@v25
         if: env.VERCEL_TOKEN != ''
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-        with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          working-directory: apps/web
-          vercel-args: '--prod'
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        working-directory: apps/web
+        run: |
+          npx --yes vercel@latest deploy --prod --token="$VERCEL_TOKEN" --yes --build-env API_URL=https://srot_backend.bytemap.in
 
   # ============================================================================
   # 2. Backend Server Deployment (Tailscale SSH -> Docker Compose)
@@ -60,7 +63,7 @@ jobs:
           username: ${{ secrets.SSH_USERNAME || 'jarvis' }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
-          timeout: 300s
+          timeout: 1200s
           envs: PROD_ENV_FILE
           script_stop: true
           script: |
