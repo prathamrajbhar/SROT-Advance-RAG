@@ -108,16 +108,11 @@ jobs:
             mkdir -p "$ROOT_DIR/models"
             python "$ROOT_DIR/scripts/download_models.py" || true
 
-            # Stage 5: Smart Infrastructure Probing (Safe for multi-project server)
-            echo "📦 [5/7] Checking host infrastructure services (Postgres, Redis, Qdrant)..."
-            MISSING_SERVICES=$(python "$ROOT_DIR/scripts/check_infra.py" --missing 2>/dev/null || true)
+            # Stage 5: Launch All Databases in Docker (Dedicated Ports: Postgres 5434, Redis 6380, Qdrant 6333, S3 4566)
+            echo "📦 [5/7] Launching all dedicated database containers in Docker..."
             cd "$ROOT_DIR"
-            if [ -n "$MISSING_SERVICES" ]; then
-              echo "Starting only missing services in Docker without touching active host ports: $MISSING_SERVICES"
-              docker compose -f infra/docker-compose.yml up -d $MISSING_SERVICES || true
-            else
-              echo "✅ All infrastructure services are already active on host. Docker bypassed."
-            fi
+            docker compose -f infra/docker-compose.yml up -d
+            sleep 4
 
             # Stage 6: Database Schema Migrations
             echo "🗄️ [6/7] Running database migrations..."

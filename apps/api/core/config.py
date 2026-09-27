@@ -12,9 +12,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Database & Cache
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/srot"
-    REDIS_URL: str = "redis://localhost:6379/0"
+    # Database & Cache (Docker Dedicated Ports)
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5434/srot"
+    REDIS_URL: str = "redis://localhost:6380/0"
 
     # Vector DB
     QDRANT_URL: str = "http://localhost:6333"
