@@ -1,4 +1,4 @@
-name: Production Deployment (Vercel Frontend & Docker Server Backend)
+name: Production Deployment (Vercel Frontend & Server Stack)
 
 on:
   push:
@@ -38,10 +38,10 @@ jobs:
           npx --yes vercel@latest deploy --prod --token="$VERCEL_TOKEN" --yes --build-env API_URL=https://srot_backend.bytemap.in
 
   # ============================================================================
-  # 2. Backend Server Deployment (Tailscale SSH -> Docker Infra + PM2 App)
+  # 2. Clean Backend Server Deployment (Docker DBs + PM2 Apps)
   # ============================================================================
   deploy-backend:
-    name: Deploy Backend via PM2 & Docker Infra to Server
+    name: Deploy Backend via PM2 & Docker to Server
     runs-on: ubuntu-latest
     needs: deploy-frontend
     if: always()
@@ -54,7 +54,7 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      - name: Deploy via SSH (PM2 & Docker)
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.3
         env:
           PROD_ENV_FILE: ${{ secrets.PROD_ENV_FILE }}
@@ -63,39 +63,64 @@ jobs:
           username: ${{ secrets.SSH_USERNAME || 'jarvis' }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
-          timeout: 600s
+          timeout: 900s
           envs: PROD_ENV_FILE
           script_stop: true
           script: |
             set -e
 
-            # Stage 0: Environment & Shell Path Initialization
+            # --------------------------------------------------------------------------
+            # Stage 0: Environment & Shell Path Setup
+            # --------------------------------------------------------------------------
             [ -f "$HOME/.profile" ] && source "$HOME/.profile" || true
             [ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc" || true
             [ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh" || true
             export PATH="$HOME/.nvm/versions/node/$(ls $HOME/.nvm/versions/node 2>/dev/null | tail -n 1)/bin:$HOME/.npm-global/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"
 
-            # Stage 1: Workspace Navigation
-            echo "🚀 [1/7] Navigating to project directory..."
-            cd /home/jarvis/SharedDrive/Force/SROT-Advance-RAG
+            PROJECT_DIR="/home/jarvis/SharedDrive/Force/SROT-Advance-RAG"
+            echo "🚀 [1/8] Navigating to project directory: $PROJECT_DIR"
+            cd "$PROJECT_DIR"
 
-            # Stage 2: Code Synchronization
-            echo "📥 [2/7] Fetching and syncing latest changes from main branch..."
+            # --------------------------------------------------------------------------
+            # Stage 1: Clean Code Sync
+            # --------------------------------------------------------------------------
+            echo "📥 [2/8] Fetching and syncing latest code from origin/main..."
             git fetch origin main
             git reset --hard origin/main
 
-            # Stage 3: Secrets & Environment Injection
-            echo "🔐 [3/7] Injecting production environment variables into .env..."
+            # --------------------------------------------------------------------------
+            # Stage 2: Clean Environment Secrets Injection
+            # --------------------------------------------------------------------------
+            echo "🔐 [3/8] Injecting production configuration into .env..."
             if [ -n "$PROD_ENV_FILE" ]; then
               printf "%s\n" "$PROD_ENV_FILE" > .env
               chmod 600 .env
-              echo "✅ .env updated and secured."
+              echo "✅ .env file written and secured."
+            else
+              echo "ℹ️ Retaining existing .env file."
             fi
 
-            # Stage 4: Python Virtual Environment & Dependencies
-            echo "🐍 [4/7] Configuring Python virtual environment & dependencies..."
-            ROOT_DIR="/home/jarvis/SharedDrive/Force/SROT-Advance-RAG"
-            cd "$ROOT_DIR/apps/api"
+            # --------------------------------------------------------------------------
+            # Stage 3: Dedicated Docker Databases (Port 5434, 6380, 6333, 4566)
+            # --------------------------------------------------------------------------
+            echo "🐳 [4/8] Starting isolated Docker database stack (Postgres:5434, Redis:6380, Qdrant:6333, S3:4566)..."
+            docker compose -f infra/docker-compose.yml up -d --remove-orphans
+            
+            # Wait for database readiness
+            echo "⏳ Waiting for PostgreSQL container on port 5434..."
+            for i in {1..30}; do
+              if docker compose -f infra/docker-compose.yml exec -T postgres pg_isready -U postgres -d srot >/dev/null 2>&1; then
+                echo "✅ PostgreSQL is ready and accepting connections."
+                break
+              fi
+              sleep 1
+            done
+
+            # --------------------------------------------------------------------------
+            # Stage 4: Python Virtualenv & Dependency Installation
+            # --------------------------------------------------------------------------
+            echo "🐍 [5/8] Setting up Python virtual environment..."
+            cd "$PROJECT_DIR/apps/api"
             if [ ! -d ".venv" ]; then
               python3 -m venv .venv
             fi
@@ -103,44 +128,47 @@ jobs:
             python -m pip install --upgrade pip setuptools wheel
             pip install -r requirements.txt
 
-            # Model Weights Provisioning
-            echo "🧠 Provisioning & caching open-source AI models..."
-            mkdir -p "$ROOT_DIR/models"
-            python "$ROOT_DIR/scripts/download_models.py" || true
+            # --------------------------------------------------------------------------
+            # Stage 5: Pre-Cache Open-Source AI Model Weights
+            # --------------------------------------------------------------------------
+            echo "🧠 [6/8] Provisioning & verifying FastEmbed and AI model weights..."
+            mkdir -p "$PROJECT_DIR/models"
+            python "$PROJECT_DIR/scripts/download_models.py" || true
 
-            # Stage 5: Launch All Databases in Docker (Dedicated Ports: Postgres 5434, Redis 6380, Qdrant 6333, S3 4566)
-            echo "📦 [5/7] Launching all dedicated database containers in Docker..."
-            cd "$ROOT_DIR"
-            docker compose -f infra/docker-compose.yml up -d
-            sleep 4
-
-            # Stage 6: Database Schema Migrations
-            echo "🗄️ [6/7] Running database migrations..."
-            cd "$ROOT_DIR/apps/api"
+            # --------------------------------------------------------------------------
+            # Stage 6: Database Schema Migrations (Alembic)
+            # --------------------------------------------------------------------------
+            echo "🗄️ [7/8] Applying Alembic database migrations..."
+            cd "$PROJECT_DIR/apps/api"
             if [ -f "alembic.ini" ]; then
-              python -m alembic upgrade head || true
+              python -m alembic upgrade head
+              echo "✅ Database migrations applied successfully."
             fi
 
-            # Stage 7: Zero-Downtime Process Reload via PM2 (Port 8087)
-            echo "🔄 [7/7] Launching / Reloading PM2 processes..."
+            # --------------------------------------------------------------------------
+            # Stage 7: Clean PM2 Process Lifecycle (Port 8087)
+            # --------------------------------------------------------------------------
+            echo "🔄 [8/8] Starting / Reloading backend services in PM2..."
+            cd "$PROJECT_DIR/apps/api"
             if command -v pm2 >/dev/null 2>&1; then
-              if pm2 describe srot-api >/dev/null 2>&1; then
-                echo "Reloading existing srot-api & srot-worker in-place..."
-                pm2 reload ecosystem.config.cjs --update-env || pm2 restart ecosystem.config.cjs --update-env
-              else
-                echo "Registering and launching srot-api & srot-worker via ecosystem..."
-                pm2 start ecosystem.config.cjs
-              fi
+              # Clean restart or in-place reload with updated env
+              pm2 delete srot-api srot-worker 2>/dev/null || true
+              pm2 start ecosystem.config.cjs
               pm2 save
+              echo "✅ PM2 processes (srot-api & srot-worker) active and saved."
             else
-              echo "⚠️ PM2 not found in PATH."
+              echo "❌ PM2 command not found."
+              exit 1
             fi
 
-            # Post-Deployment Health Check Probe
-            echo "🩺 Probing backend health on port 8087..."
+            # --------------------------------------------------------------------------
+            # Post-Deployment Deep Health Probe
+            # --------------------------------------------------------------------------
+            echo "🩺 Performing health verification probe on port 8087..."
             sleep 3
             if command -v curl >/dev/null 2>&1; then
-              curl -sf http://127.0.0.1:8087/docs >/dev/null 2>&1 && echo "✅ SROT Backend is healthy in PM2 on port 8087!" || echo "ℹ️ PM2 processes active on port 8087."
+              HEALTH_RESP=$(curl -s http://127.0.0.1:8087/health || true)
+              echo "Health Check Result: $HEALTH_RESP"
             fi
 
-            echo "🎉 Deployment completed successfully!"
+            echo "🎉 Fresh deployment completed successfully!"
