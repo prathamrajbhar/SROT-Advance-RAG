@@ -40,6 +40,16 @@ async def ensure_project_collection(
     collection_name = get_collection_name(project_id)
     
     exists = await client.collection_exists(collection_name=collection_name)
+    if exists:
+        try:
+            coll_info = await client.get_collection(collection_name=collection_name)
+            current_dim = coll_info.config.params.vectors.size if hasattr(coll_info.config.params.vectors, "size") else None
+            if current_dim and current_dim != vector_dim:
+                await client.delete_collection(collection_name=collection_name)
+                exists = False
+        except Exception:
+            pass
+
     if not exists:
         for attempt in range(4):
             try:
@@ -59,6 +69,7 @@ async def ensure_project_collection(
                     raise
                 await asyncio.sleep(0.5)
     return collection_name
+
 
 
 async def delete_project_collection(project_id: str) -> None:

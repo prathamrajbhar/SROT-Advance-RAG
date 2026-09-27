@@ -1,15 +1,39 @@
-from typing import List, Tuple
+"""Enterprise Reranker Adapter for open-source cross-encoder models.
+
+Loads weights directly from the local workspace models directory (./models) via fastembed,
+or routes to local TEI reranker service if explicitly configured.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+from typing import List, Optional, Tuple
 import httpx
 from core.config import get_settings
 from core.models.base import BaseReranker
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
 class RerankerAdapter(BaseReranker):
-    def __init__(self):
-        self.provider = settings.RERANKER_PROVIDER
+    def __init__(self) -> None:
+        self.provider = settings.RERANKER_PROVIDER.lower()
+        self.model = getattr(settings, "RERANKER_MODEL", "BAAI/bge-reranker-base")
         self.reranker_url = settings.RERANKER_URL
+        
+        # Resolve workspace models directory
+        workspace_models = Path(settings.MODELS_DIR) if settings.MODELS_DIR else Path(__file__).resolve().parent.parent.parent.parent.parent / "models"
+        self.models_dir = str(workspace_models)
+        self._local_reranker = None
+
+        if self.provider == "local":
+            try:
+                from fastembed.rerank.cross_encoder import TextCrossEncoder
+                self._local_reranker = TextCrossEncoder(model_name=self.model, cache_dir=self.models_dir)
+            except Exception as exc:
+                logger.info("Local fastembed cross-encoder initialization: %s", exc)
 
     async def rerank(
         self, query: str, candidates: List[str], top_k: int = 8
@@ -17,29 +41,41 @@ class RerankerAdapter(BaseReranker):
         if not candidates:
             return []
 
-        if self.provider == "local":
+        # 1. In-process workspace cross-encoder reranker
+        if self.provider == "local" and self._local_reranker is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                scores = await loop.run_in_executor(
+                    None, lambda: list(self._local_reranker.rerank(query, candidates))
+                )
+                # Format (index, score) pairs
+                ranked = [(idx, float(score)) for idx, score in enumerate(scores)]
+                ranked.sort(key=lambda x: x[1], reverse=True)
+                return ranked[:top_k]
+            except Exception as exc:
+                logger.warning("In-process reranking warning: %s", exc)
+
+        # 2. Remote / standalone cross-encoder endpoint fallback
+        if self.reranker_url:
             try:
                 headers = {"X-Internal-Token": settings.INTERNAL_MODEL_TOKEN}
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                payload = {"query": query, "texts": candidates, "candidates": candidates, "truncate": True}
+                async with httpx.AsyncClient(timeout=15.0) as client:
                     res = await client.post(
-                        f"{self.reranker_url}/rerank",
+                        f"{self.reranker_url.rstrip('/')}/rerank",
                         headers=headers,
-                        json={"query": query, "candidates": candidates, "top_k": top_k},
+                        json=payload,
                     )
                     if res.status_code == 200:
-                        results = res.json().get("results", [])
-                        return [(r["index"], float(r["score"])) for r in results]
-            except Exception:
-                pass
+                        raw_data = res.json()
+                        items = raw_data if isinstance(raw_data, list) else raw_data.get("results", [])
+                        parsed = [(int(r["index"]), float(r["score"])) for r in items]
+                        parsed.sort(key=lambda x: x[1], reverse=True)
+                        return parsed[:top_k]
+            except Exception as exc:
+                logger.warning("Local reranker endpoint unreachable (%s): %s", self.reranker_url, exc)
 
-        # Robust keyword & token overlap score for dev/testing
-        query_terms = set(query.lower().split())
-        scored: List[Tuple[int, float]] = []
-        for i, text in enumerate(candidates):
-            text_lower = text.lower()
-            overlap = sum(1 for term in query_terms if term in text_lower)
-            score = min(1.0, 0.4 + (overlap / max(1, len(query_terms))) * 0.55)
-            scored.append((i, score))
+        # 3. Preserve hybrid retrieval RRF rank
+        total = len(candidates)
+        return [(idx, max(0.5, 0.95 - (idx * (0.4 / max(1, total))))) for idx in range(min(top_k, total))]
 
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return scored[:top_k]

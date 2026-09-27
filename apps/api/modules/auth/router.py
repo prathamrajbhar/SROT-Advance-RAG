@@ -1,6 +1,7 @@
 from typing import Optional
 from fastapi import APIRouter, Cookie, Depends, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from core.config import get_settings
 from core.database import get_db
 from models.auth import User
 from modules.auth.deps import get_current_user
@@ -17,7 +18,23 @@ from modules.auth.service import (
     register_user,
 )
 
+settings = get_settings()
 router = APIRouter(prefix="/auth", tags=["Auth"])
+
+REFRESH_COOKIE_MAX_AGE = settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600
+IS_PRODUCTION = settings.ENVIRONMENT.lower() == "production"
+
+
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key="refresh_token",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=IS_PRODUCTION,
+        path="/",
+        max_age=REFRESH_COOKIE_MAX_AGE,
+    )
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -27,17 +44,11 @@ async def register(
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
     user, access_token, refresh_raw = await register_user(db, request)
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_raw,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        max_age=7 * 24 * 3600,
-    )
+    _set_refresh_cookie(response, refresh_raw)
     return TokenResponse(
         user=UserResponse.model_validate(user),
         access_token=access_token,
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
 
@@ -48,17 +59,11 @@ async def login(
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
     user, access_token, refresh_raw = await login_user(db, request)
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_raw,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        max_age=7 * 24 * 3600,
-    )
+    _set_refresh_cookie(response, refresh_raw)
     return TokenResponse(
         user=UserResponse.model_validate(user),
         access_token=access_token,
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
 
@@ -69,17 +74,11 @@ async def refresh(
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
     user, access_token, new_refresh_raw = await refresh_tokens(db, refresh_token or "")
-    response.set_cookie(
-        key="refresh_token",
-        value=new_refresh_raw,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        max_age=7 * 24 * 3600,
-    )
+    _set_refresh_cookie(response, new_refresh_raw)
     return TokenResponse(
         user=UserResponse.model_validate(user),
         access_token=access_token,
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
 
@@ -90,9 +89,10 @@ async def logout(
     db: AsyncSession = Depends(get_db),
 ) -> None:
     await logout_user(db, refresh_token)
-    response.delete_cookie(key="refresh_token")
+    response.delete_cookie(key="refresh_token", path="/")
 
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(user: User = Depends(get_current_user)) -> UserResponse:
     return UserResponse.model_validate(user)
+

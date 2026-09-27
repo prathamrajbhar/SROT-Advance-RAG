@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 import uuid
 from typing import AsyncGenerator, Dict, Any, List
@@ -19,6 +20,7 @@ from modules.retrieval.hybrid import hybrid_retrieve
 from modules.retrieval.query_rewrite import rewrite_query_if_needed
 from modules.retrieval.rerank import rerank_and_assemble_context
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -52,55 +54,55 @@ async def stream_chat_response(
 
         await db.commit()
 
-    # 1. Retrieval
-    yield f"event: status\ndata: {json.dumps({'stage': 'retrieving'})}\n\n"
-    rewritten_query = await rewrite_query_if_needed(conv_id_str, query_text)
-
-    async with async_session_factory() as db:
-        retrieved_chunks, debug_retrieval = await hybrid_retrieve(db, project_id, rewritten_query)
-
-        # 2. Reranking
-        yield f"event: status\ndata: {json.dumps({'stage': 'reranking'})}\n\n"
-        contexts, debug_rerank, top_score = await rerank_and_assemble_context(db, rewritten_query, retrieved_chunks)
-
-        if debug:
-            debug_retrieval["reranked"] = debug_rerank
-            yield f"event: retrieval\ndata: {json.dumps(debug_retrieval)}\n\n"
-
-        # Check Insufficiency Gate
-        if top_score < settings.RERANK_MIN_SCORE or not contexts:
-            docs_stmt = select(Document.id, Document.filename).where(Document.project_id == project_id)
-            searched_docs = [{"document_id": str(r[0]), "filename": r[1]} for r in (await db.execute(docs_stmt)).all()]
-            insufficient_md = "I don't have enough evidence in this project's documents to answer that."
-
-            assistant_msg = Message(conversation_id=conversation_id, role="assistant", content_md=insufficient_md)
-            db.add(assistant_msg)
-            await db.flush()
-
-            turn = AssistantTurn(
-                message_id=assistant_msg.id,
-                verdict=Verdict.INSUFFICIENT_EVIDENCE,
-                confidence=0.31,
-                top_rerank_score=top_score,
-                latency_ms=int((time.perf_counter() - start_time) * 1000),
-                model_provider=settings.LLM_PROVIDER,
-                model_name=settings.LLM_MODEL,
-            )
-            db.add(turn)
-            await db.commit()
-
-            yield f"event: final\ndata: {json.dumps({'verdict': 'insufficient_evidence', 'confidence': 0.31, 'searched_documents': searched_docs, 'content_md': insufficient_md})}\n\n"
-            return
-
-    # 3. Generation
-    yield f"event: status\ndata: {json.dumps({'stage': 'generating', 'provider': settings.LLM_PROVIDER, 'model': settings.LLM_MODEL})}\n\n"
-    llm = get_llm_client()
-    context_str = "\n\n".join(
-        [f"[Doc: {c['document_name']} | Chunk ID: {c['chunk_id']}]\n{c['content']}" for c in contexts]
-    )
-    prompt = f"Context:\n{context_str}\n\nUser Question:\n{query_text}"
-
     try:
+        # 1. Retrieval
+        yield f"event: status\ndata: {json.dumps({'stage': 'retrieving'})}\n\n"
+        rewritten_query = await rewrite_query_if_needed(conv_id_str, query_text)
+
+        async with async_session_factory() as db:
+            retrieved_chunks, debug_retrieval = await hybrid_retrieve(db, project_id, rewritten_query)
+
+            # 2. Reranking
+            yield f"event: status\ndata: {json.dumps({'stage': 'reranking'})}\n\n"
+            contexts, debug_rerank, top_score = await rerank_and_assemble_context(db, rewritten_query, retrieved_chunks)
+
+            if debug:
+                debug_retrieval["reranked"] = debug_rerank
+                yield f"event: retrieval\ndata: {json.dumps(debug_retrieval)}\n\n"
+
+            # Check Insufficiency Gate
+            if top_score < settings.RERANK_MIN_SCORE or not contexts:
+                docs_stmt = select(Document.id, Document.filename).where(Document.project_id == project_id)
+                searched_docs = [{"document_id": str(r[0]), "filename": r[1]} for r in (await db.execute(docs_stmt)).all()]
+                insufficient_md = "I don't have enough evidence in this project's documents to answer that."
+
+                assistant_msg = Message(conversation_id=conversation_id, role="assistant", content_md=insufficient_md)
+                db.add(assistant_msg)
+                await db.flush()
+
+                turn = AssistantTurn(
+                    message_id=assistant_msg.id,
+                    verdict=Verdict.INSUFFICIENT_EVIDENCE,
+                    confidence=0.31,
+                    top_rerank_score=top_score,
+                    latency_ms=int((time.perf_counter() - start_time) * 1000),
+                    model_provider=settings.LLM_PROVIDER,
+                    model_name=settings.LLM_MODEL,
+                )
+                db.add(turn)
+                await db.commit()
+
+                yield f"event: final\ndata: {json.dumps({'verdict': 'insufficient_evidence', 'confidence': 0.31, 'searched_documents': searched_docs, 'content_md': insufficient_md})}\n\n"
+                return
+
+        # 3. Generation
+        yield f"event: status\ndata: {json.dumps({'stage': 'generating', 'provider': settings.LLM_PROVIDER, 'model': settings.LLM_MODEL})}\n\n"
+        llm = get_llm_client()
+        context_str = "\n\n".join(
+            [f"[Doc: {c['document_name']} | Chunk ID: {c['chunk_id']}]\n{c['content']}" for c in contexts]
+        )
+        prompt = f"Context:\n{context_str}\n\nUser Question:\n{query_text}"
+
         system_prompt = (
             "You are an enterprise factual QA assistant. Answer the user query strictly using the provided context.\n"
             "Output ONLY a single valid JSON object strictly matching this schema:\n"
@@ -114,103 +116,108 @@ async def stream_chat_response(
             temperature=0.2,
             json_mode=True,
         )
-    except Exception as e:
-        raw_error = str(e)
+
+        answer_md, claims = extract_llm_json_response(llm_resp.content)
+
+        # Stream tokens
+        for word in answer_md.split(" "):
+            yield f"event: token\ndata: {json.dumps({'t': word + ' '})}\n\n"
+
+        # Citation Validation
+        all_valid, valid_citations, coverage = validate_citations_sync(claims, contexts)
+        for cit in valid_citations:
+            yield f"event: citation\ndata: {json.dumps(cit)}\n\n"
+
+        # 4. Verifying
+        yield f"event: status\ndata: {json.dumps({'stage': 'verifying'})}\n\n"
+        faithfulness, _ = await judge_faithfulness(contexts, answer_md)
         latency_ms = int((time.perf_counter() - start_time) * 1000)
-        user_friendly_error = (
-            "I encountered a temporary issue communicating with the language model provider. "
-            "Please verify your model service is active and try your question again in a moment."
-        )
+        confidence = compute_composite_confidence(faithfulness, top_score, coverage, latency_ms)
+
+        verdict = Verdict.ANSWERED if all_valid else Verdict.UNVERIFIED
+        if not all_valid:
+            confidence = min(0.49, confidence)
+
+        # Persist Assistant Turn
         async with async_session_factory() as db:
-            assistant_msg = Message(
-                conversation_id=conversation_id,
-                role="assistant",
-                content_md=user_friendly_error,
-            )
+            assistant_msg = Message(conversation_id=conversation_id, role="assistant", content_md=answer_md)
             db.add(assistant_msg)
             await db.flush()
 
             turn = AssistantTurn(
                 message_id=assistant_msg.id,
-                verdict=Verdict.ERROR,
-                confidence=0.0,
+                verdict=verdict,
+                confidence=confidence,
+                faithfulness=faithfulness,
+                top_rerank_score=top_score,
+                coverage=coverage,
                 latency_ms=latency_ms,
-                model_provider=settings.LLM_PROVIDER,
-                model_name=settings.LLM_MODEL,
+                prompt_tokens=llm_resp.prompt_tokens,
+                completion_tokens=llm_resp.completion_tokens,
+                cost_usd=llm_resp.cost_usd,
+                model_provider=llm_resp.provider,
+                model_name=llm_resp.model,
+                citations=valid_citations,
             )
             db.add(turn)
             await db.commit()
 
-        yield f"event: error\ndata: {json.dumps({'code': 'LLM_ERROR', 'message': raw_error})}\n\n"
-        yield f"event: final\ndata: {json.dumps({'message_id': str(assistant_msg.id), 'verdict': 'error', 'confidence': 0.0, 'content_md': user_friendly_error, 'error_detail': raw_error})}\n\n"
-        return
+            # Update Redis memory
+            redis_cli = await get_redis()
+            await redis_cli.rpush(
+                f"conv:{conv_id_str}:last_turns",
+                json.dumps({"role": "user", "content": query_text}),
+                json.dumps({"role": "assistant", "content": answer_md}),
+            )
+            await redis_cli.ltrim(f"conv:{conv_id_str}:last_turns", -12, -1)
 
-    answer_md, claims = extract_llm_json_response(llm_resp.content)
+        final_payload = {
+            "message_id": str(assistant_msg.id),
+            "verdict": verdict.value,
+            "confidence": confidence,
+            "faithfulness": faithfulness,
+            "coverage": coverage,
+            "top_rerank_score": top_score,
+            "latency_ms": latency_ms,
+            "prompt_tokens": llm_resp.prompt_tokens,
+            "completion_tokens": llm_resp.completion_tokens,
+            "cost_usd": llm_resp.cost_usd,
+            "model_provider": llm_resp.provider,
+            "model_name": llm_resp.model,
+        }
+        yield f"event: final\ndata: {json.dumps(final_payload)}\n\n"
 
-    # Stream tokens
-    for word in answer_md.split(" "):
-        yield f"event: token\ndata: {json.dumps({'t': word + ' '})}\n\n"
-
-    # Citation Validation
-    all_valid, valid_citations, coverage = validate_citations_sync(claims, contexts)
-    for cit in valid_citations:
-        yield f"event: citation\ndata: {json.dumps(cit)}\n\n"
-
-    # 4. Verifying
-    yield f"event: status\ndata: {json.dumps({'stage': 'verifying'})}\n\n"
-    faithfulness, _ = await judge_faithfulness(contexts, answer_md)
-    latency_ms = int((time.perf_counter() - start_time) * 1000)
-    confidence = compute_composite_confidence(faithfulness, top_score, coverage, latency_ms)
-
-    verdict = Verdict.ANSWERED if all_valid else Verdict.UNVERIFIED
-    if not all_valid:
-        confidence = min(0.49, confidence)
-
-    # Persist Assistant Turn
-    async with async_session_factory() as db:
-        assistant_msg = Message(conversation_id=conversation_id, role="assistant", content_md=answer_md)
-        db.add(assistant_msg)
-        await db.flush()
-
-        turn = AssistantTurn(
-            message_id=assistant_msg.id,
-            verdict=verdict,
-            confidence=confidence,
-            faithfulness=faithfulness,
-            top_rerank_score=top_score,
-            coverage=coverage,
-            latency_ms=latency_ms,
-            prompt_tokens=llm_resp.prompt_tokens,
-            completion_tokens=llm_resp.completion_tokens,
-            cost_usd=llm_resp.cost_usd,
-            model_provider=llm_resp.provider,
-            model_name=llm_resp.model,
-            citations=valid_citations,
+    except Exception as exc:
+        logger.error(f"Chat stream pipeline failed: {exc}", exc_info=True)
+        raw_error = str(exc)
+        latency_ms = int((time.perf_counter() - start_time) * 1000)
+        user_friendly_error = (
+            "I encountered a temporary issue processing your request. "
+            "Please verify that your models are running and try your question again."
         )
-        db.add(turn)
-        await db.commit()
+        try:
+            async with async_session_factory() as db:
+                assistant_msg = Message(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content_md=user_friendly_error,
+                )
+                db.add(assistant_msg)
+                await db.flush()
 
-        # Update Redis memory
-        redis_cli = await get_redis()
-        await redis_cli.rpush(
-            f"conv:{conv_id_str}:last_turns",
-            json.dumps({"role": "user", "content": query_text}),
-            json.dumps({"role": "assistant", "content": answer_md}),
-        )
-        await redis_cli.ltrim(f"conv:{conv_id_str}:last_turns", -12, -1)
+                turn = AssistantTurn(
+                    message_id=assistant_msg.id,
+                    verdict=Verdict.ERROR,
+                    confidence=0.0,
+                    latency_ms=latency_ms,
+                    model_provider=settings.LLM_PROVIDER,
+                    model_name=settings.LLM_MODEL,
+                )
+                db.add(turn)
+                await db.commit()
+                msg_id_str = str(assistant_msg.id)
+        except Exception:
+            msg_id_str = str(uuid.uuid4())
 
-    final_payload = {
-        "message_id": str(assistant_msg.id),
-        "verdict": verdict.value,
-        "confidence": confidence,
-        "faithfulness": faithfulness,
-        "coverage": coverage,
-        "top_rerank_score": top_score,
-        "latency_ms": latency_ms,
-        "prompt_tokens": llm_resp.prompt_tokens,
-        "completion_tokens": llm_resp.completion_tokens,
-        "cost_usd": llm_resp.cost_usd,
-        "model_provider": llm_resp.provider,
-        "model_name": llm_resp.model,
-    }
-    yield f"event: final\ndata: {json.dumps(final_payload)}\n\n"
+        yield f"event: error\ndata: {json.dumps({'code': 'STREAM_ERROR', 'message': raw_error})}\n\n"
+        yield f"event: final\ndata: {json.dumps({'message_id': msg_id_str, 'verdict': 'error', 'confidence': 0.0, 'content_md': user_friendly_error, 'error_detail': raw_error})}\n\n"

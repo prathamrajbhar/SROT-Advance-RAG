@@ -1,26 +1,69 @@
+"""Spreadsheet parsers that emit one ``sheet_row`` element per data row.
+
+Each row's content is serialised as ``col: value; col: value; ...`` so
+exact-match IDs (e.g. "INV-2024-0042") are retrievable by BM25 FTS
+without being buried inside a batched blob.
+
+Headers are included in every row's content so the chunk is
+self-contained; the sheet name is carried in ``heading_path``.
+"""
+from __future__ import annotations
+
 import csv
 import io
-from typing import Any, Dict, List
+import logging
+from typing import List
+
 import openpyxl
 
+from modules.ingestion.chunker import ParsedElement
 
-def parse_csv(content_bytes: bytes) -> List[Dict[str, Any]]:
+logger = logging.getLogger(__name__)
+
+_CSV_FALLBACK_SHEET = "Sheet1"
+
+
+def _row_to_content(headers: List[str], values: List[str]) -> str:
+    """Serialise one row as 'col: value; col: value; ...'
+
+    Skips columns where value is empty and returns empty string if no valid values exist.
+    """
+    parts: List[str] = []
+    has_any_value = False
+    for header, value in zip(headers, values):
+        val_str = str(value).strip() if value is not None else ""
+        if val_str:
+            has_any_value = True
+            parts.append(f"{header}: {val_str}")
+    if not has_any_value:
+        return ""
+    # Any extra values beyond header count (rare but possible in CSV)
+    for value in values[len(headers) :]:
+        val_str = str(value).strip() if value is not None else ""
+        if val_str:
+            parts.append(val_str)
+    return "; ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# CSV
+# ---------------------------------------------------------------------------
+
+
+def parse_csv(content_bytes: bytes) -> List[ParsedElement]:
     text = content_bytes.decode("utf-8", errors="replace")
     if not text.strip():
         return []
 
     delimiter = ","
     try:
-        sample = text[:2048]
-        if "\t" in sample and "," not in sample:
+        dialect = csv.Sniffer().sniff(text[:2048], delimiters=",\t;|")
+        delimiter = dialect.delimiter
+    except csv.Error:
+        if "\t" in text and "," not in text:
             delimiter = "\t"
-        elif ";" in sample and "," not in sample:
+        elif ";" in text and "," not in text:
             delimiter = ";"
-        else:
-            dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
-            delimiter = dialect.delimiter
-    except Exception:
-        delimiter = ","
 
     reader = csv.reader(io.StringIO(text), delimiter=delimiter)
     rows = list(reader)
@@ -28,48 +71,35 @@ def parse_csv(content_bytes: bytes) -> List[Dict[str, Any]]:
         return []
 
     headers = [h.strip() for h in rows[0]]
-    elements: List[Dict[str, Any]] = []
+    elements: List[ParsedElement] = []
 
-    if len(rows) == 1:
-        elements.append({
-            "kind": "table_row",
-            "content": "Headers: " + ", ".join(headers),
-            "locator": {
-                "row_range": [1, 1],
-                "sheet": "Sheet1",
+    for row_idx, row in enumerate(rows[1:], start=2):
+        values = [str(v).strip() for v in row]
+        content = _row_to_content(headers, values)
+        if not content.strip():
+            continue
+        elements.append(ParsedElement(
+            kind="sheet_row",
+            content=content,
+            locator={
+                "row_range": [row_idx, row_idx],
+                "sheet": _CSV_FALLBACK_SHEET,
             },
-        })
-        return elements
+            heading_path=[_CSV_FALLBACK_SHEET],
+        ))
 
-    # Batch rows in groups of 10 for table context
-    batch_size = 10
-    for i in range(1, len(rows), batch_size):
-        batch = rows[i : i + batch_size]
-        batch_lines = []
-        for r_idx, row in enumerate(batch):
-            actual_row_num = i + r_idx + 1
-            row_items = []
-            for col_idx, val in enumerate(row):
-                header_name = headers[col_idx] if col_idx < len(headers) else f"Col_{col_idx+1}"
-                row_items.append(f"{header_name}: {val.strip()}")
-            batch_lines.append(f"Row {actual_row_num}: " + ", ".join(row_items))
-
-        content = "\n".join(batch_lines)
-        elements.append({
-            "kind": "table_row",
-            "content": content,
-            "locator": {
-                "row_range": [i + 1, min(len(rows), i + batch_size)],
-                "sheet": "Sheet1",
-            },
-        })
-
+    logger.debug("parse_csv: %d data rows → %d sheet_row elements", len(rows) - 1, len(elements))
     return elements
 
 
-def parse_xlsx(content_bytes: bytes) -> List[Dict[str, Any]]:
+# ---------------------------------------------------------------------------
+# XLSX
+# ---------------------------------------------------------------------------
+
+
+def parse_xlsx(content_bytes: bytes) -> List[ParsedElement]:
     wb = openpyxl.load_workbook(io.BytesIO(content_bytes), data_only=True)
-    elements: List[Dict[str, Any]] = []
+    elements: List[ParsedElement] = []
 
     for sheet_name in wb.sheetnames:
         sheet = wb[sheet_name]
@@ -77,38 +107,32 @@ def parse_xlsx(content_bytes: bytes) -> List[Dict[str, Any]]:
         if not rows:
             continue
 
-        headers = [str(h or f"Col_{i+1}").strip() for i, h in enumerate(rows[0])]
-        if len(rows) == 1:
-            elements.append({
-                "kind": "table_row",
-                "content": "Headers: " + ", ".join(headers),
-                "locator": {
-                    "row_range": [1, 1],
+        headers = [
+            str(h).strip() if h is not None else f"Col_{i + 1}"
+            for i, h in enumerate(rows[0])
+        ]
+
+        sheet_elements: List[ParsedElement] = []
+        for row_idx, row in enumerate(rows[1:], start=2):
+            values = [str(v).strip() if v is not None else "" for v in row]
+            content = _row_to_content(headers, values)
+            if not content.strip():
+                continue
+            sheet_elements.append(ParsedElement(
+                kind="sheet_row",
+                content=content,
+                locator={
+                    "row_range": [row_idx, row_idx],
                     "sheet": sheet_name,
                 },
-            })
-            continue
+                heading_path=[sheet_name],
+            ))
 
-        batch_size = 10
-        for i in range(1, len(rows), batch_size):
-            batch = rows[i : i + batch_size]
-            batch_lines = []
-            for r_idx, row in enumerate(batch):
-                actual_row_num = i + r_idx + 1
-                row_items = []
-                for col_idx, val in enumerate(row):
-                    header_name = headers[col_idx] if col_idx < len(headers) else f"Col_{col_idx+1}"
-                    row_items.append(f"{header_name}: {str(val).strip() if val is not None else ''}")
-                batch_lines.append(f"Row {actual_row_num}: " + ", ".join(row_items))
-
-            content = "\n".join(batch_lines)
-            elements.append({
-                "kind": "table_row",
-                "content": content,
-                "locator": {
-                    "row_range": [i + 1, min(len(rows), i + batch_size)],
-                    "sheet": sheet_name,
-                },
-            })
+        logger.debug(
+            "parse_xlsx: sheet '%s' → %d sheet_row elements",
+            sheet_name,
+            len(sheet_elements),
+        )
+        elements.extend(sheet_elements)
 
     return elements

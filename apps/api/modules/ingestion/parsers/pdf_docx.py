@@ -1,143 +1,255 @@
+"""PDF and DOCX parsers — produce typed ParsedElement objects.
+
+PDF:   text is extracted per page; short non-punctuated lines become headings.
+       Scanned/image-only pages are OCR-processed via the image parser.
+DOCX:  paragraphs and tables are iterated in document body order so table
+       position relative to prose is preserved. Word heading styles give
+       exact heading levels.
+
+Image extraction from PDFs is best-effort: if the PDF library cannot decode a
+specific image, that image is skipped with a logged warning — the rest of the
+document continues to parse normally.
+"""
+from __future__ import annotations
+
 import io
+import logging
+import re
 import zlib
-from typing import Any, Dict, List, Tuple
+from typing import Any, Generator, Tuple
+
 import docx
+import docx.table
+import docx.text.paragraph
+from docx.oxml.ns import qn
 from pypdf import PdfReader
 
+from modules.ingestion.chunker import ParsedElement, _advance_path
+from modules.ingestion.parsers.media import parse_image
 
-def extract_page_images(page: Any, page_num: int) -> List[Tuple[bytes, str, str]]:
-    """Extract embedded images from a PDF page using pure python XObject stream decompression."""
-    images: List[Tuple[bytes, str, str]] = []
+logger = logging.getLogger(__name__)
 
-    # 1. Try pypdf page.images (if Pillow is installed)
+# PDF heading heuristic: short lines (≤ 15 words, ≤ 100 chars) that do not
+# end with punctuation are treated as headings. All such headings are level 1
+# because PDF has no semantic style information.
+_PDF_HEADING_MAX_WORDS = 15
+_PDF_HEADING_MAX_CHARS = 100
+
+
+# ─── PDF helpers ──────────────────────────────────────────────────────────────
+
+
+def _is_pdf_heading(text: str) -> bool:
+    words = text.split()
+    return (
+        bool(words)
+        and re.search(r"[A-Za-z]", text) is not None
+        and 1 <= len(words) <= _PDF_HEADING_MAX_WORDS
+        and len(text) <= _PDF_HEADING_MAX_CHARS
+        and text[-1] not in ".?!,"
+    )
+
+
+def _extract_page_images(page: Any, page_num: int) -> list[Tuple[bytes, str, str]]:
+    """Return (raw_bytes, name, mime_type) for every image on a PDF page.
+
+    Attempts two strategies:
+    1. pypdf's high-level page.images API (requires Pillow).
+    2. Direct XObject stream extraction with FlateDecode decompression.
+
+    Failures from either strategy are logged at DEBUG level and do not
+    abort parsing — the caller decides whether to continue without images.
+    """
+    images: list[Tuple[bytes, str, str]] = []
+
+    # Strategy 1: pypdf page.images
     try:
-        for img_idx, img_file in enumerate(page.images):
-            img_name = getattr(img_file, "name", f"page_{page_num}_img_{img_idx+1}.png")
-            images.append((img_file.data, img_name, "image/png"))
-    except Exception:
-        pass
+        for idx, img in enumerate(page.images):
+            name = getattr(img, "name", f"page_{page_num}_img_{idx}.png")
+            images.append((img.data, name, "image/png"))
+    except Exception as exc:
+        logger.debug("PDF page %d: pypdf.page.images failed: %s", page_num, exc)
 
-    # 2. Pure python XObject stream extraction
-    if not images:
-        try:
-            resources = page.get("/Resources", {})
-            if hasattr(resources, "get_object"):
-                resources = resources.get_object()
-            if isinstance(resources, dict) and "/XObject" in resources:
-                xobjects = resources["/XObject"]
-                if hasattr(xobjects, "get_object"):
-                    xobjects = xobjects.get_object()
-                for obj_name, obj in xobjects.items():
-                    if hasattr(obj, "get_object"):
-                        obj = obj.get_object()
-                    if isinstance(obj, dict) and obj.get("/Subtype") == "/Image":
-                        raw_data = getattr(obj, "_data", None)
-                        if not raw_data and hasattr(obj, "get_data"):
-                            raw_data = obj.get_data()
-                        if raw_data:
-                            filter_type = str(obj.get("/Filter", ""))
-                            if "/FlateDecode" in filter_type:
-                                try:
-                                    raw_data = zlib.decompress(raw_data)
-                                except Exception:
-                                    pass
-                            mime = "image/jpeg" if raw_data.startswith(b"\xff\xd8\xff") else "image/png"
-                            ext = "jpg" if mime == "image/jpeg" else "png"
-                            clean_name = f"page_{page_num}_{str(obj_name).lstrip('/')}.{ext}"
-                            images.append((raw_data, clean_name, mime))
-        except Exception:
-            pass
+    if images:
+        return images
+
+    # Strategy 2: Raw XObject stream extraction
+    try:
+        resources = page.get("/Resources", {})
+        if hasattr(resources, "get_object"):
+            resources = resources.get_object()
+        xobj_map = (resources or {}).get("/XObject", {})
+        if hasattr(xobj_map, "get_object"):
+            xobj_map = xobj_map.get_object()
+
+        for obj_name, obj_ref in (xobj_map or {}).items():
+            obj = obj_ref.get_object() if hasattr(obj_ref, "get_object") else obj_ref
+            if not (isinstance(obj, dict) and obj.get("/Subtype") == "/Image"):
+                continue
+
+            raw: bytes | None = getattr(obj, "_data", None)
+            if raw is None and hasattr(obj, "get_data"):
+                raw = obj.get_data()
+            if not raw:
+                continue
+
+            if "/FlateDecode" in str(obj.get("/Filter", "")):
+                try:
+                    raw = zlib.decompress(raw)
+                except zlib.error as decomp_exc:
+                    logger.debug(
+                        "PDF page %d: FlateDecode decompression failed for %s: %s",
+                        page_num, obj_name, decomp_exc,
+                    )
+                    continue
+
+            mime = "image/jpeg" if raw[:3] == b"\xff\xd8\xff" else "image/png"
+            ext = "jpg" if mime == "image/jpeg" else "png"
+            images.append((raw, f"page_{page_num}_{str(obj_name).lstrip('/')}.{ext}", mime))
+
+    except Exception as exc:
+        logger.debug("PDF page %d: XObject extraction failed: %s", page_num, exc)
 
     return images
 
 
-async def parse_pdf(content_bytes: bytes) -> List[Dict[str, Any]]:
-    from modules.ingestion.parsers.media import parse_image
+# ─── PDF parser ───────────────────────────────────────────────────────────────
 
-    elements: List[Dict[str, Any]] = []
+
+async def parse_pdf(content_bytes: bytes) -> list[ParsedElement]:
+    """Parse a PDF into typed ParsedElement objects.
+
+    Text pages → paragraph/heading elements.
+    Scanned pages → OCR via parse_image; if OCR yields nothing, a descriptive
+    placeholder is emitted so the chunk is not silently lost.
+    """
+    elements: list[ParsedElement] = []
     reader = PdfReader(io.BytesIO(content_bytes))
+    heading_path: list[str] = []
 
     for page_idx, page in enumerate(reader.pages):
         page_num = page_idx + 1
         page_text = page.extract_text() or ""
-        paragraphs = [p.strip() for p in page_text.split("\n\n") if p.strip()]
+        blocks = [b.strip() for b in page_text.split("\n\n") if b.strip()]
 
-        if paragraphs:
-            for p in paragraphs:
-                if len(p) < 80 and not p.endswith("."):
-                    elements.append({
-                        "kind": "heading",
-                        "content": p,
-                        "locator": {"page_number": page_num},
-                    })
-                else:
-                    elements.append({
-                        "kind": "text",
-                        "content": p,
-                        "locator": {"page_number": page_num},
-                    })
-        else:
-            # Scanned / image-only PDF page
-            page_imgs = extract_page_images(page, page_num)
-            page_has_content = False
-            for img_bytes, img_name, mime in page_imgs:
+        if not blocks:
+            # Scanned page — attempt OCR on embedded images.
+            page_images = _extract_page_images(page, page_num)
+            got_content = False
+
+            for img_bytes, img_name, mime in page_images:
                 try:
                     img_elements = await parse_image(img_bytes, img_name, mime)
-                    for elem in img_elements:
-                        elem["locator"]["page_number"] = page_num
-                        elements.append(elem)
-                        page_has_content = True
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "PDF page %d: OCR failed for image %s: %s",
+                        page_num, img_name, exc,
+                    )
+                    continue
 
-            if not page_has_content:
-                elements.append({
-                    "kind": "text",
-                    "content": f"Page {page_num} of {len(reader.pages)}: Scanned page visual record.",
-                    "locator": {"page_number": page_num},
-                })
+                for el in img_elements:
+                    el.locator["page_number"] = page_num
+                    elements.append(el)
+                    got_content = True
 
-    if not elements:
-        elements.append({
-            "kind": "text",
-            "content": f"PDF document containing {len(reader.pages)} pages.",
-            "locator": {"page_number": 1},
-        })
+            if not got_content:
+                elements.append(ParsedElement(
+                    kind="paragraph",
+                    content=f"[Page {page_num} of {len(reader.pages)}: scanned, no extractable text]",
+                    locator={"page_number": page_num},
+                    heading_path=list(heading_path),
+                ))
+            continue
+
+        for block in blocks:
+            if _is_pdf_heading(block):
+                heading_path = _advance_path(heading_path, block, 1)
+                elements.append(ParsedElement(
+                    kind="heading",
+                    content=block,
+                    locator={"page_number": page_num},
+                    heading_path=list(heading_path[:-1]),
+                    heading_level=1,
+                ))
+            else:
+                elements.append(ParsedElement(
+                    kind="paragraph",
+                    content=block,
+                    locator={"page_number": page_num},
+                    heading_path=list(heading_path),
+                ))
 
     return elements
 
 
-def parse_docx(content_bytes: bytes) -> List[Dict[str, Any]]:
-    elements: List[Dict[str, Any]] = []
+# ─── DOCX helpers ────────────────────────────────────────────────────────────
+
+
+def _iter_docx_body(doc: Any) -> Generator[Tuple[str, Any], None, None]:
+    """Yield ('paragraph', Paragraph) or ('table', Table) in document order."""
+    for child in doc.element.body:
+        if child.tag == qn("w:p"):
+            yield "paragraph", docx.text.paragraph.Paragraph(child, doc)
+        elif child.tag == qn("w:tbl"):
+            yield "table", docx.table.Table(child, doc)
+
+
+# ─── DOCX parser ─────────────────────────────────────────────────────────────
+
+
+def parse_docx(content_bytes: bytes) -> list[ParsedElement]:
+    """Parse a DOCX into typed ParsedElement objects.
+
+    Iterates the document XML body so paragraphs and tables appear in their
+    original order. Word heading styles (Heading 1…6) give exact levels.
+    Tables are emitted as single atomic ``table`` elements.
+    """
+    elements: list[ParsedElement] = []
     doc = docx.Document(io.BytesIO(content_bytes))
+    heading_path: list[str] = []
+    para_index = 0
 
-    for p in doc.paragraphs:
-        text = p.text.strip()
-        if not text:
-            continue
-        if p.style and p.style.name and p.style.name.startswith("Heading"):
-            elements.append({
-                "kind": "heading",
-                "content": text,
-                "locator": {"style": p.style.name},
-            })
-        else:
-            elements.append({
-                "kind": "text",
-                "content": text,
-                "locator": {"style": "Normal"},
-            })
+    for block_kind, block in _iter_docx_body(doc):
+        if block_kind == "paragraph":
+            text = block.text.strip()
+            if not text:
+                continue
 
-    for table in doc.tables:
-        table_rows = []
-        for row in table.rows:
-            row_cells = [cell.text.strip() for cell in row.cells]
-            table_rows.append(" | ".join(row_cells))
-        if table_rows:
-            elements.append({
-                "kind": "table_row",
-                "content": "\n".join(table_rows),
-                "locator": {"rows": len(table_rows)},
-            })
+            style_name: str = (block.style.name or "") if block.style else ""
+
+            if style_name.startswith("Heading"):
+                try:
+                    level = int(style_name.split()[-1])
+                except (ValueError, IndexError):
+                    level = 1
+                heading_path = _advance_path(heading_path, text, level)
+                elements.append(ParsedElement(
+                    kind="heading",
+                    content=text,
+                    locator={"style": style_name, "para_index": para_index},
+                    heading_path=list(heading_path[:-1]),
+                    heading_level=level,
+                ))
+            else:
+                elements.append(ParsedElement(
+                    kind="paragraph",
+                    content=text,
+                    locator={"style": style_name or "Normal", "para_index": para_index},
+                    heading_path=list(heading_path),
+                ))
+            para_index += 1
+
+        elif block_kind == "table":
+            rows = [
+                " | ".join(cell.text.strip() for cell in row.cells)
+                for row in block.rows
+            ]
+            if rows:
+                elements.append(ParsedElement(
+                    kind="table",
+                    content="\n".join(rows),
+                    locator={"rows": len(rows)},
+                    heading_path=list(heading_path),
+                ))
 
     return elements

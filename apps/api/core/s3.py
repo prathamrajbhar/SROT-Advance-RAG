@@ -54,6 +54,17 @@ async def upload_file_bytes(
     return key
 
 
+async def download_file_bytes(
+    key: str, bucket_name: Optional[str] = None
+) -> bytes:
+    target_bucket = bucket_name or settings.S3_BUCKET
+    kwargs = get_s3_client_kwargs()
+    async with session.client(**kwargs) as s3:
+        res = await s3.get_object(Bucket=target_bucket, Key=key)
+        async with res["Body"] as stream:
+            return await stream.read()
+
+
 async def generate_presigned_url(
     key: str, expires_in: int = 300, bucket_name: Optional[str] = None
 ) -> str:

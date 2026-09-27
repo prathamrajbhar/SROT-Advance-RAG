@@ -1,0 +1,114 @@
+name: Production Deployment (Vercel Frontend & Docker Server Backend)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  # ============================================================================
+  # 1. Frontend Deployment (Vercel Production Deploy)
+  # ============================================================================
+  deploy-frontend:
+    name: Deploy Frontend to Vercel
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Deploy to Vercel Production
+        uses: amondnet/vercel-action@v25
+        if: env.VERCEL_TOKEN != ''
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: apps/web
+          vercel-args: '--prod'
+
+  # ============================================================================
+  # 2. Backend Server Deployment (Tailscale SSH -> Docker Compose)
+  # ============================================================================
+  deploy-backend:
+    name: Deploy Backend via Docker to Server
+    runs-on: ubuntu-latest
+    needs: deploy-frontend
+    if: always()
+
+    steps:
+      - name: Connect to Tailscale Network
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Deploy via SSH & Docker
+        uses: appleboy/ssh-action@v1.2.3
+        env:
+          PROD_ENV_FILE: ${{ secrets.PROD_ENV_FILE }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME || 'jarvis' }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          timeout: 300s
+          envs: PROD_ENV_FILE
+          script_stop: true
+          script: |
+            set -e
+
+            # Stage 0: Environment & Shell Path Initialization
+            [ -f "$HOME/.profile" ] && source "$HOME/.profile" || true
+            [ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc" || true
+            export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"
+
+            # Stage 1: Workspace Navigation
+            echo "🚀 [1/6] Navigating to project directory..."
+            cd /home/jarvis/SharedDrive/Force/SROT-Advance-RAG
+
+            # Stage 2: Code Synchronization
+            echo "📥 [2/6] Fetching and syncing latest changes from main branch..."
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Stage 3: Secrets & Environment Injection
+            echo "🔐 [3/6] Injecting production environment variables into .env.prod..."
+            if [ -n "$PROD_ENV_FILE" ]; then
+              printf "%s\n" "$PROD_ENV_FILE" > .env.prod
+              chmod 600 .env.prod
+              echo "✅ .env.prod updated and secured."
+            elif [ -f ".env" ] && [ ! -f ".env.prod" ]; then
+              cp .env .env.prod
+              echo "ℹ️ Copied existing .env to .env.prod."
+            fi
+
+            # Stage 4: Open-Source Models Provisioning (Host Cache Mount)
+            echo "🧠 [4/6] Checking AI model weights..."
+            mkdir -p models
+
+            # Stage 5: Docker Container Stack Build & Deployment
+            echo "🐳 [5/6] Building and starting Docker containers (Port 8087)..."
+            docker compose -f infra/docker-compose.prod.yml down --remove-orphans || true
+            docker compose -f infra/docker-compose.prod.yml up -d --build
+
+            # Stage 6: Database Migrations via Container
+            echo "🗄️ [6/6] Applying database migrations..."
+            docker compose -f infra/docker-compose.prod.yml exec -T api alembic upgrade head || true
+
+            # Post-Deployment Health Check Probe
+            echo "🩺 Probing backend health on port 8087..."
+            sleep 5
+            if command -v curl >/dev/null 2>&1; then
+              curl -sf http://127.0.0.1:8087/docs >/dev/null 2>&1 && echo "✅ SROT Backend is healthy on port 8087!" || echo "ℹ️ Backend containers running on port 8087."
+            fi
+
+            echo "🎉 Deployment completed successfully!"

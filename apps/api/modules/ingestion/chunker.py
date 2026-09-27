@@ -1,126 +1,187 @@
+"""Structure-aware parent-child chunker.
+
+Parsers produce ``ParsedElement`` objects. This module groups them into child
+chunks (≤ CHUNK_CHILD_TOKENS tokens each) assigned to parent buckets
+(≤ CHUNK_PARENT_TOKENS tokens). Every non-heading child is prefixed with the
+heading breadcrumb so each chunk is retrieval-complete with no text overlap.
+
+Atomic kinds (table, transcript_segment, sheet_row) are emitted whole — never
+split. Headings are never prefixed; they ARE the context anchor.
+"""
+from __future__ import annotations
+
 import hashlib
+import logging
 import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Literal, Optional
+
+from pydantic import BaseModel
+
 from core.config import get_settings
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# ─── Element kinds ────────────────────────────────────────────────────────────
+
+ElementKind = Literal[
+    "heading",
+    "paragraph",
+    "text",              # accepted from legacy parsers
+    "table",
+    "list",
+    "transcript_segment",
+    "sheet_row",
+    "image_description",
+]
+
+ATOMIC_KINDS: frozenset[str] = frozenset(
+    {"table", "transcript_segment", "sheet_row"}
+)
+
+
+# ─── Typed element model ──────────────────────────────────────────────────────
+
+
+class ParsedElement(BaseModel):
+    """One unit of structured content produced by a parser."""
+
+    kind: ElementKind
+    content: str
+    locator: dict = {}
+    heading_path: list[str] = []  # breadcrumb at time of emit
+    heading_level: int = 1        # 1-based; only meaningful for "heading"
+
+
+# ─── Pure helpers ─────────────────────────────────────────────────────────────
 
 
 def estimate_tokens(text: str) -> int:
+    """Word-count token estimate. No external dependencies required."""
     return max(1, len(text.split()))
 
 
 def hash_content(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
-def recursive_split_text(
+def _heading_prefix(path: list[str]) -> str:
+    """'Section: A > B — '  or  '' when the document has no headings yet."""
+    return ("Section: " + " > ".join(path) + " — ") if path else ""
+
+
+def _advance_path(path: list[str], text: str, level: int) -> list[str]:
+    """Insert heading text at 1-based level, trimming any deeper ancestors."""
+    return path[: level - 1] + [text]
+
+
+def _sentence_children(
     text: str,
-    chunk_size: int = 250,
-    chunk_overlap: int = 35,
-) -> List[str]:
-    """Split text recursively along sentence boundaries with sliding window token overlap."""
-    clean_text = text.strip()
-    if not clean_text:
-        return []
+    prefix: str,
+    limit: int,
+) -> list[tuple[str, int]]:
+    """Split text at sentence boundaries; return (stored_content, raw_tokens).
 
-    words = clean_text.split()
-    if len(words) <= chunk_size:
-        return [clean_text]
+    ``raw_tokens`` counts only the original content words — not the prefix —
+    so parent-bucket tracking is not distorted by heading-context overhead.
+    A sentence longer than ``limit`` is emitted intact: we never break a
+    sentence to satisfy the limit.
+    """
+    sentences = [s for s in re.split(r"(?<=[.?!])\s+", text.strip()) if s.strip()]
+    if not sentences:
+        raw = estimate_tokens(text)
+        return [(prefix + text.strip(), raw)]
 
-    # Sentence boundary regex (split on period, question mark, or exclamation followed by whitespace)
-    sentences = [s.strip() for s in re.split(r"(?<=[.?!])\s+", clean_text) if s.strip()]
-    if len(sentences) > 1 and all(len(s.split()) <= chunk_size for s in sentences):
-        chunks: List[str] = []
-        current_words: List[str] = []
+    children: list[tuple[str, int]] = []
+    batch: list[str] = []
+    batch_tokens = 0
 
-        for sentence in sentences:
-            s_words = sentence.split()
-            if len(current_words) + len(s_words) <= chunk_size:
-                current_words.extend(s_words)
-            else:
-                if current_words:
-                    chunks.append(" ".join(current_words))
-                    overlap = current_words[-chunk_overlap:] if len(current_words) > chunk_overlap else current_words
-                    current_words = overlap + s_words
-                else:
-                    chunks.append(sentence)
+    for sentence in sentences:
+        s_tokens = estimate_tokens(sentence)
+        if batch and batch_tokens + s_tokens > limit:
+            children.append((prefix + " ".join(batch), batch_tokens))
+            batch, batch_tokens = [], 0
+        batch.append(sentence)
+        batch_tokens += s_tokens
 
-        if current_words:
-            chunks.append(" ".join(current_words))
-        return chunks
+    if batch:
+        children.append((prefix + " ".join(batch), batch_tokens))
 
-    # Fallback to word-level sliding window
-    chunks = []
-    step = max(1, chunk_size - chunk_overlap)
-    for i in range(0, len(words), step):
-        chunk_slice = words[i : i + chunk_size]
-        chunks.append(" ".join(chunk_slice))
-        if i + chunk_size >= len(words):
-            break
-    return chunks
+    return children
+
+
+# ─── Public API ───────────────────────────────────────────────────────────────
 
 
 def chunk_elements(
-    elements: List[Dict[str, Any]],
-    child_token_limit: int = 250,
-    child_token_overlap: int = 35,
-    parent_token_limit: int = 1500,
-) -> List[Dict[str, Any]]:
-    """Generate enterprise-grade hierarchical parent-child chunks with sentence boundary preservation."""
-    chunks: List[Dict[str, Any]] = []
+    elements: list[ParsedElement],
+    child_token_limit: Optional[int] = None,
+    parent_token_limit: Optional[int] = None,
+) -> list[dict]:
+    """Convert structured elements into parent-child chunk dicts.
+
+    Parent assignment:
+      - The first chunk in each bucket has parent_id = None.
+        It acts as the anchor for all subsequent chunks in the bucket.
+      - A new bucket starts when adding the next chunk would exceed
+        parent_token_limit.
+
+    Returns list[dict] with keys matching the Chunk ORM:
+      id, parent_id, chunk_index, kind, token_count, content,
+      locator, content_hash.
+    """
+    child_limit = child_token_limit or settings.CHUNK_CHILD_TOKENS
+    parent_limit = parent_token_limit or settings.CHUNK_PARENT_TOKENS
+
+    output: list[dict] = []
     chunk_index = 0
+    bucket_id: Optional[uuid.UUID] = None
+    bucket_tokens = 0
+    heading_path: list[str] = []
 
-    current_parent_id: Optional[uuid.UUID] = None
-    current_parent_tokens = 0
-    active_heading: Optional[str] = None
-
-    for el in elements:
-        content = el["content"].strip()
+    for elem in elements:
+        content = elem.content.strip()
         if not content:
             continue
 
-        kind = el.get("kind", "text")
-        if kind == "heading":
-            active_heading = content
+        if elem.kind == "heading":
+            clean = content.lstrip("#").strip()
+            heading_path = _advance_path(heading_path, clean, elem.heading_level)
+            items: list[tuple[str, int]] = [(content, estimate_tokens(content))]
 
-        # Atomic kinds (headings, table rows) are preserved intact if within bounds
-        if kind in ("heading", "table_row") and estimate_tokens(content) <= child_token_limit * 2:
-            sub_chunks = [content]
+        elif elem.kind in ATOMIC_KINDS:
+            active_path = elem.heading_path if elem.heading_path else heading_path
+            prefix = _heading_prefix(active_path)
+            items = [(prefix + content, estimate_tokens(content))]
+
         else:
-            sub_chunks = recursive_split_text(
-                content,
-                chunk_size=child_token_limit,
-                chunk_overlap=child_token_overlap,
-            )
+            active_path = elem.heading_path if elem.heading_path else heading_path
+            prefix = _heading_prefix(active_path)
+            items = _sentence_children(content, prefix, child_limit)
 
-        for sub_text in sub_chunks:
-            sub_tokens = estimate_tokens(sub_text)
-            child_id = uuid.uuid4()
+        for stored, raw_tokens in items:
+            cid = uuid.uuid4()
 
-            if current_parent_id is None or current_parent_tokens + sub_tokens > parent_token_limit:
-                current_parent_id = child_id
-                current_parent_tokens = sub_tokens
-                assigned_parent_id = None
+            if bucket_id is None or bucket_tokens + raw_tokens > parent_limit:
+                bucket_id = cid
+                bucket_tokens = raw_tokens
+                parent_id: Optional[uuid.UUID] = None
             else:
-                assigned_parent_id = current_parent_id
-                current_parent_tokens += sub_tokens
+                parent_id = bucket_id
+                bucket_tokens += raw_tokens
 
-            locator = dict(el.get("locator") or {})
-            if active_heading and "heading" not in locator and kind != "heading":
-                locator["section_heading"] = active_heading
-
-            chunks.append({
-                "id": child_id,
-                "parent_id": assigned_parent_id,
+            output.append({
+                "id": cid,
+                "parent_id": parent_id,
                 "chunk_index": chunk_index,
-                "kind": kind,
-                "token_count": sub_tokens,
-                "content": sub_text,
-                "locator": locator if locator else None,
-                "content_hash": hash_content(sub_text),
+                "kind": elem.kind,
+                "token_count": raw_tokens,
+                "content": stored,
+                "locator": dict(elem.locator) if elem.locator else None,
+                "content_hash": hash_content(stored),
             })
             chunk_index += 1
 
-    return chunks
+    logger.debug("chunk_elements: %d elements → %d chunks", len(elements), len(output))
+    return output

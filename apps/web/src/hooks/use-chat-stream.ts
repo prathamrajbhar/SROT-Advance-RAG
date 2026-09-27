@@ -20,7 +20,29 @@ export function useChatStream(conversationId: string | null) {
       const data = await apiFetch<{ items: ChatMessage[] }>(
         `/conversations/${conversationId}/messages`
       );
-      setMessages(data.items || []);
+      setMessages((prev) => {
+        if (!data.items || data.items.length === 0) {
+          return prev;
+        }
+        const seenIds = new Set<string>();
+        const merged: ChatMessage[] = [];
+        for (const msg of data.items) {
+          if (!seenIds.has(msg.id)) {
+            seenIds.add(msg.id);
+            merged.push(msg);
+          }
+        }
+        for (const msg of prev) {
+          const alreadyPresent = merged.some(
+            (m) => m.id === msg.id || (m.role === msg.role && m.content_md === msg.content_md)
+          );
+          if (!alreadyPresent) {
+            seenIds.add(msg.id);
+            merged.push(msg);
+          }
+        }
+        return merged;
+      });
     } catch {
       // Handle gracefully
     } finally {
@@ -32,8 +54,13 @@ export function useChatStream(conversationId: string | null) {
     fetchHistory();
   }, [fetchHistory]);
 
-  const sendMessage = async (content: string, debug: boolean = false) => {
-    if (!conversationId || !content.trim() || isStreaming) return;
+  const sendMessage = async (
+    content: string,
+    debug: boolean = false,
+    overrideConvId?: string
+  ) => {
+    const targetConvId = overrideConvId || conversationId;
+    if (!targetConvId || !content.trim() || isStreaming) return;
 
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
@@ -42,7 +69,16 @@ export function useChatStream(conversationId: string | null) {
       created_at: new Date().toISOString(),
     };
 
-    setMessages((prev) => [...prev, userMessage]);
+    setMessages((prev) => {
+      const isRecentDuplicate = prev.some(
+        (m) =>
+          m.role === "user" &&
+          m.content_md === content &&
+          Math.abs(Date.now() - new Date(m.created_at).getTime()) < 3000
+      );
+      if (isRecentDuplicate) return prev;
+      return [...prev, userMessage];
+    });
     setIsStreaming(true);
     setCurrentStage("retrieving");
 
@@ -58,7 +94,7 @@ export function useChatStream(conversationId: string | null) {
       if (token) headers["Authorization"] = `Bearer ${token}`;
 
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1"}/conversations/${conversationId}/messages`,
+        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1"}/conversations/${targetConvId}/messages`,
         {
           method: "POST",
           headers,

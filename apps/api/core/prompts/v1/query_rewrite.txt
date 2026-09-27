@@ -1,10 +1,16 @@
-Given a conversation history and a follow-up question, rewrite the follow-up question into a standalone search query that contains all necessary context.
-Do not answer the question; only return the rewritten query string.
+You are a search query rewriter. Your only job is to rewrite the follow-up question into a single standalone search query that captures the full intent, using context from the conversation history.
 
-Conversation History:
+Rules:
+- Output EXACTLY one sentence — the rewritten search query.
+- Do NOT answer the question.
+- Do NOT include "Search for:" or any preamble.
+- Do NOT use pronouns that refer to previous messages ("it", "that", "they") — replace them with explicit nouns from history.
+- If the question is already standalone and clear, return it unchanged.
+
+Conversation History (last {n_turns} turns):
 {history}
 
 Follow-up Question:
 {question}
 
-Standalone Search Query:
+Rewritten Search Query:

@@ -12,13 +12,20 @@ async def get_current_user(
     authorization: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    if not authorization or not authorization.startswith("Bearer "):
+    if not authorization:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid authentication token",
+            detail="Missing authentication credentials",
         )
 
-    token = authorization.split(" ")[1]
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication scheme; Bearer token required",
+        )
+    token = token.strip()
+
     try:
         payload = decode_token(token)
         user_id_str = payload.get("sub")

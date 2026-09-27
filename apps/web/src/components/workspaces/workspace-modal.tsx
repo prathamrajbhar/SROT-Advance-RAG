@@ -91,10 +91,12 @@ export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
           )}
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+            <label htmlFor="workspace-name" className="block text-xs font-semibold text-slate-700 mb-1.5">
               Workspace Name <span className="text-red-500">*</span>
             </label>
             <Input
+              id="workspace-name"
+              name="name"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Legal & Compliance Hub"

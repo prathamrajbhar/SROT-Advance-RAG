@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { ToastProvider } from "@/components/ui/toast";
+import { AuthProvider } from "@/hooks/use-auth";
 
 export const metadata: Metadata = {
   title: "SROT — Enterprise Multi-Project Multimodal RAG",
@@ -18,7 +19,9 @@ export default function RootLayout({
       <body className="bg-slate-50 text-slate-900 min-h-screen antialiased">
         <ErrorBoundary>
           <ToastProvider>
-            {children}
+            <AuthProvider>
+              {children}
+            </AuthProvider>
           </ToastProvider>
         </ErrorBoundary>
       </body>

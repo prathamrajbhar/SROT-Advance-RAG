@@ -1,0 +1,124 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: srot-postgres-prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-srot}
+    ports:
+      - "5432:5432"
+    volumes:
+      - srot_postgres_prod_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-srot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: srot-redis-prod
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - srot_redis_prod_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    container_name: srot-qdrant-prod
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    volumes:
+      - srot_qdrant_prod_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "/bin/bash -c 'echo > /dev/tcp/localhost/6333'"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  localstack:
+    image: localstack/localstack:3.8.0
+    container_name: srot-localstack-prod
+    restart: unless-stopped
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3
+      - AWS_DEFAULT_REGION=us-east-1
+    volumes:
+      - srot_localstack_prod_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD-SHELL", "/bin/bash -c 'echo > /dev/tcp/localhost/4566'"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    container_name: srot-api-prod
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - ../.env.prod
+    ports:
+      - "8087:8087"
+    volumes:
+      - ../models:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8087/docs || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    container_name: srot-worker-prod
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["celery", "-A", "modules.ingestion.tasks", "worker", "--loglevel=info"]
+    env_file:
+      - ../.env.prod
+    volumes:
+      - ../models:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+
+volumes:
+  srot_postgres_prod_data:
+  srot_redis_prod_data:
+  srot_qdrant_prod_data:
+  srot_localstack_prod_data:

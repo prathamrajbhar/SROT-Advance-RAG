@@ -73,17 +73,30 @@ async def refresh_tokens(
 
     now = datetime.now(timezone.utc)
     if token_record.revoked_at is not None:
-        # Reuse attack detected: revoke entire token family
-        await db.execute(
-            update(RefreshToken)
-            .where(RefreshToken.family_id == token_record.family_id)
-            .values(revoked_at=now)
+        revocation_age = (now - token_record.revoked_at).total_seconds()
+        if revocation_age > 15:
+            # Malicious token reuse detected: revoke entire token family
+            await db.execute(
+                update(RefreshToken)
+                .where(RefreshToken.family_id == token_record.family_id)
+                .values(revoked_at=now)
+            )
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token reuse detected. All sessions revoked.",
+            )
+        
+        # Concurrent network request within grace period: return fresh access token
+        user_stmt = select(User).where(User.id == token_record.user_id)
+        user = (await db.execute(user_stmt)).scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        access_token = create_access_token(
+            subject=str(user.id),
+            extra_claims={"family_id": str(token_record.family_id)},
         )
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token reuse detected. All sessions revoked.",
-        )
+        return user, access_token, refresh_raw
 
     if token_record.expires_at < now:
         raise HTTPException(
@@ -97,13 +110,14 @@ async def refresh_tokens(
     user_stmt = select(User).where(User.id == token_record.user_id)
     user = (await db.execute(user_stmt)).scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 
     access_token, new_refresh_raw = await _create_token_pair(
         db, user.id, family_id=token_record.family_id
     )
     await db.commit()
     return user, access_token, new_refresh_raw
+
 
 
 async def logout_user(db: AsyncSession, refresh_raw: Optional[str]) -> None:

@@ -65,8 +65,16 @@ export default function ProjectChatPage({
     await createConversation("New Chat");
   };
 
+  const handleSendMessage = async (content: string, debug: boolean = false) => {
+    let convId = activeConversationId;
+    if (!convId) {
+      convId = await createConversation(content.slice(0, 30));
+    }
+    await sendMessage(content, debug, convId);
+  };
+
   const handleSelectPrompt = (promptText: string) => {
-    sendMessage(promptText, false);
+    handleSendMessage(promptText, false);
   };
 
   const activeConv = conversations.find((c) => c.id === activeConversationId) || null;
@@ -133,7 +141,7 @@ export default function ProjectChatPage({
           <div className="p-4 bg-white border-t border-slate-200 shrink-0">
             <div className="max-w-4xl mx-auto">
               <ChatInput
-                onSendMessage={sendMessage}
+                onSendMessage={handleSendMessage}
                 isStreaming={isStreaming}
                 currentStage={currentStage}
               />

@@ -16,8 +16,10 @@
     "test:api": "cd apps/api && .venv/bin/pytest -v",
     "test:web": "cd apps/web && npm test",
     "migrate": "cd apps/api && .venv/bin/alembic upgrade head",
+    "models:download": "cd apps/api && .venv/bin/python ../../scripts/download_models.py",
     "health": "bash scripts/check-health.sh"
   },
+
   "devDependencies": {
     "concurrently": "^9.1.2"
   }
