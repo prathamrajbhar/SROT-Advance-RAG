@@ -9,8 +9,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-srot}
-    ports:
-      - "5432:5432"
     volumes:
       - srot_postgres_prod_data:/var/lib/postgresql/data
     healthcheck:
@@ -23,8 +21,6 @@ services:
     image: redis:7.4-alpine
     container_name: srot-redis-prod
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     volumes:
       - srot_redis_prod_data:/data
     healthcheck:
@@ -37,9 +33,6 @@ services:
     image: qdrant/qdrant:v1.13.2
     container_name: srot-qdrant-prod
     restart: unless-stopped
-    ports:
-      - "6333:6333"
-      - "6334:6334"
     ulimits:
       nofile:
         soft: 65535
@@ -56,8 +49,6 @@ services:
     image: localstack/localstack:3.8.0
     container_name: srot-localstack-prod
     restart: unless-stopped
-    ports:
-      - "4566:4566"
     environment:
       - SERVICES=s3
       - AWS_DEFAULT_REGION=us-east-1
