@@ -9,6 +9,7 @@ from core.config import get_settings
 from core.logging import RequestTracingMiddleware, setup_logging
 from modules.health.router import router as health_router
 from modules.onboarding.router import router as onboarding_router
+from modules.documents import documents_router
 
 setup_logging()
 settings = get_settings()
@@ -18,6 +19,12 @@ logger = logging.getLogger("srot.api")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    try:
+        from core.s3 import get_s3_manager
+
+        get_s3_manager().ensure_bucket_cors()
+    except Exception as exc:
+        logger.debug(f"S3 lifespan bucket check: {exc}")
     yield
 
 
@@ -89,9 +96,9 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
-# API Routers
 app.include_router(health_router)  # /health & /ready at root
 api_v1_prefix = "/api/v1"
 app.include_router(health_router, prefix=api_v1_prefix)  # /api/v1/health & /api/v1/ready
 app.include_router(onboarding_router, prefix=api_v1_prefix)  # /api/v1/onboarding/*
+app.include_router(documents_router, prefix=api_v1_prefix)  # /api/v1/documents/*
 

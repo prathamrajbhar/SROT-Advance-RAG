@@ -1,7 +1,7 @@
 import json
 from functools import lru_cache
-from typing import List
-from pydantic import field_validator
+from typing import List, Optional
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,14 +14,25 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str
+    DATABASE_URL_SYNC: Optional[str] = None
 
     # Infrastructure
     REDIS_URL: str = "redis://localhost:7379/0"
+    CELERY_BROKER_URL: str = "redis://localhost:7379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:7379/2"
     QDRANT_URL: str = "http://localhost:7333"
+
+    # AWS S3 Object Storage
+    AWS_REGION: str = Field(default="us-east-1", validation_alias=AliasChoices("AWS_REGION", "AWS_DEFAULT_REGION"))
+    AWS_ACCESS_KEY_ID: str = Field(default="test", validation_alias=AliasChoices("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY"))
+    AWS_SECRET_ACCESS_KEY: str = Field(default="test", validation_alias=AliasChoices("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY"))
+    S3_BUCKET_NAME: str = Field(default="srot", validation_alias=AliasChoices("S3_BUCKET_NAME", "BUCKET_NAME", "BUCKET"))
+    S3_ENDPOINT_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("S3_ENDPOINT_URL", "AWS_ENDPOINT_URL"))
+    S3_PRESIGNED_EXPIRY_SECONDS: int = 3600
 
     # Cryptographic Vault
     ENCRYPTION_MASTER_KEY: str
-
+    FLASHRANK_CACHE_DIR: str = "/tmp/flashrank_cache"
 
     # Runtime
     ENVIRONMENT: str = "development"

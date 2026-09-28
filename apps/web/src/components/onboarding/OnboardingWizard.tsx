@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "@/components/ui/toast";
 import { StepIndicator } from "./StepIndicator";
 import { StepWorkspace } from "./StepWorkspace";
@@ -30,6 +31,7 @@ const INITIAL_STATE: OnboardingState = {
 };
 
 export const OnboardingWizard: React.FC = () => {
+  const router = useRouter();
   const [currentStep, setCurrentStep] = useState(1);
   const [state, setState] = useState<OnboardingState>(INITIAL_STATE);
   const [isLoading, setIsLoading] = useState(false);
@@ -95,6 +97,9 @@ export const OnboardingWizard: React.FC = () => {
 
   const handleFinish = () => {
     toast.success("Workspace setup complete! AI engines ready.", "Launch Complete");
+    if (state.workspaceId) {
+      router.push(`/workspace/${state.workspaceId}/documents`);
+    }
   };
 
   return (

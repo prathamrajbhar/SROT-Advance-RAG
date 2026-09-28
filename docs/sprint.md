@@ -64,8 +64,8 @@ Every task and sprint in SROT must satisfy these strict quality gates before bei
   - Clicking "Load Enterprise Sample Dataset" seeds test files to tenant S3 prefix and enqueues indexing.
 
 ---
-
-### Sprint 2: Direct-to-S3 Multipart Ingestion & Real-Time Redis SSE Stream
+Direct-to-S3 Multipart Ingestion & Real-Time Redis SSE Stream
+### Sprint 2: 
 - **Goal:** Enable multi-gigabyte client-side parallel chunk uploads to AWS S3, set up background Celery workers, and stream live progress via Server-Sent Events (SSE).
 - **User Stories & Tasks:**
   - `S2-1 (NEW - Item 2)`: Implement S3 Multipart Presigned engine in `apps/api/core/s3.py` supporting `InitiateMultipartUpload`, `PresignPartUpload` (10MB chunks), and `CompleteMultipartUpload`.
